@@ -12,7 +12,13 @@ New-Item -ItemType Directory -Force -Path $StartMenu | Out-Null
 @echo off
 setlocal
 cd /d "$LauncherRoot"
-gradle run
+set GRADLE_ARGS=--no-daemon
+if not "%BLOCKBOX_LAUNCHER_JAVA_HOME%"=="" (
+  set JAVA_HOME=%BLOCKBOX_LAUNCHER_JAVA_HOME%
+  set PATH=%BLOCKBOX_LAUNCHER_JAVA_HOME%\bin;%PATH%
+  set GRADLE_ARGS=--no-daemon -Dorg.gradle.java.home=%BLOCKBOX_LAUNCHER_JAVA_HOME%
+)
+gradle %GRADLE_ARGS% run
 "@ | Set-Content -Path $LauncherCmd -Encoding ASCII
 
 $Shell = New-Object -ComObject WScript.Shell

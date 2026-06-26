@@ -13,17 +13,24 @@ mkdir -p "${BIN_DIR}" "${APP_DIR}"
 cat > "${WRAPPER}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -z "\${JAVA_HOME:-}" ]]; then
+if [[ -n "\${BLOCKBOX_LAUNCHER_JAVA_HOME:-}" ]]; then
+  export JAVA_HOME="\${BLOCKBOX_LAUNCHER_JAVA_HOME}"
+else
   for candidate in /opt/openjdk-bin-21 /usr/lib/jvm/openjdk-21 /usr/lib/jvm/openjdk-bin-21 /usr/lib/jvm/java-21-openjdk; do
     if [[ -x "\${candidate}/bin/java" ]]; then
       export JAVA_HOME="\${candidate}"
-      export PATH="\${JAVA_HOME}/bin:\${PATH}"
       break
     fi
   done
 fi
+if [[ -n "\${JAVA_HOME:-}" ]]; then
+  export PATH="\${JAVA_HOME}/bin:\${PATH}"
+  GRADLE_JAVA_OPT="-Dorg.gradle.java.home=\${JAVA_HOME}"
+else
+  GRADLE_JAVA_OPT=""
+fi
 cd "${LAUNCHER_ROOT}"
-exec gradle run
+exec gradle --no-daemon \${GRADLE_JAVA_OPT} run
 EOF
 chmod +x "${WRAPPER}"
 

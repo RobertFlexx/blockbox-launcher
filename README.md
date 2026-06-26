@@ -39,7 +39,25 @@ from the main blockbox folder:
 ./scripts/run-launcher.sh
 ```
 
-or from this launcher folder:
+or from this launcher folder on linux:
+
+```bash
+./scripts/run.sh
+```
+
+on bsd:
+
+```sh
+./scripts/run-bsd.sh
+```
+
+on windows powershell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\run-windows.ps1
+```
+
+you can also run gradle directly:
 
 ```bash
 gradle run
