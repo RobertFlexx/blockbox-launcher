@@ -49,6 +49,8 @@ if gradle or kotlin complains about java 25, use java 21. the root `scripts/run-
 
 ## installing on linux
 
+> install gradle and java 21 or later!
+
 from this launcher folder:
 
 ```bash
