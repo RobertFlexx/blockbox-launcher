@@ -1,6 +1,6 @@
 # blockbox launcher
 
-[blockbox](https://github.com/RobertFlexx/blockbox) launcher is the desktop launcher for (https://github.com/RobertFlexx/blockbox)[blockbox].
+[blockbox](https://github.com/RobertFlexx/blockbox) launcher is the desktop launcher for [blockbox](https://github.com/RobertFlexx/blockbox).
 
 it is made in kotlin with compose desktop. it is meant to feel more like a real instance launcher instead of just a run button.
 
