@@ -1,11 +1,13 @@
 package blockbox.launcher
 
 import java.awt.Desktop
-import java.awt.FileDialog
-import java.awt.Frame
-import java.io.FilenameFilter
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.nio.file.Files
 import java.nio.file.Path
+import javax.swing.JFileChooser
+import javax.swing.UIManager
+import javax.swing.filechooser.FileNameExtensionFilter
 import kotlin.io.path.createDirectories
 
 fun parseEnv(raw: String): Map<String, String> = raw.split('\n', ';').mapNotNull { line ->
@@ -45,21 +47,90 @@ fun splitCommandLine(raw: String): List<String> {
 }
 
 fun chooseFile(title: String, extension: String): String? {
-    val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD)
-    dialog.filenameFilter = FilenameFilter { _, name -> name.endsWith(".$extension", ignoreCase = true) }
-    dialog.file = "*.$extension"
-    dialog.isVisible = true
-    val directory = dialog.directory ?: return null
-    val file = dialog.file ?: return null
-    return Path.of(directory, file).toAbsolutePath().toString()
+    platformFilePicker(title, extension, false)?.let { return it }
+    return swingFilePicker(title, extension, false)
 }
 
 fun chooseAnyFileOrFolder(title: String): String? {
-    val dialog = FileDialog(null as Frame?, title, FileDialog.LOAD)
-    dialog.isVisible = true
-    val directory = dialog.directory ?: return null
-    val file = dialog.file ?: return null
-    return Path.of(directory, file).toAbsolutePath().toString()
+    platformFilePicker(title, null, true)?.let { return it }
+    return swingFilePicker(title, null, true)
+}
+
+private fun platformFilePicker(title: String, extension: String?, allowDirectory: Boolean): String? {
+    val os = System.getProperty("os.name").lowercase()
+    return when {
+        os.contains("win") -> windowsPicker(title, extension)
+        commandExists("kdialog") -> runPicker(buildList {
+            add("kdialog")
+            add("--title")
+            add(title)
+            add("--getopenfilename")
+            add(System.getProperty("user.home"))
+            if (extension != null) add("*.$extension")
+        })
+        commandExists("zenity") -> runPicker(buildList {
+            add("zenity")
+            add("--file-selection")
+            add("--title=$title")
+            if (allowDirectory) add("--directory")
+            if (extension != null) add("--file-filter=Blockbox packs (*.$extension) | *.$extension")
+        })
+        commandExists("yad") -> runPicker(buildList {
+            add("yad")
+            add("--file")
+            add("--title=$title")
+            if (allowDirectory) add("--directory")
+            if (extension != null) add("--file-filter=*.$extension")
+        })
+        commandExists("qarma") -> runPicker(buildList {
+            add("qarma")
+            add("--file-selection")
+            add("--title=$title")
+            if (allowDirectory) add("--directory")
+            if (extension != null) add("--file-filter=*.$extension")
+        })
+        commandExists("matedialog") -> runPicker(buildList {
+            add("matedialog")
+            add("--file-selection")
+            add("--title=$title")
+            if (allowDirectory) add("--directory")
+            if (extension != null) add("--file-filter=*.$extension")
+        })
+        else -> null
+    }
+}
+
+private fun swingFilePicker(title: String, extension: String?, allowDirectory: Boolean): String? = try {
+    UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName())
+    val chooser = JFileChooser(System.getProperty("user.home"))
+    chooser.dialogTitle = title
+    chooser.fileSelectionMode = if (allowDirectory) JFileChooser.FILES_AND_DIRECTORIES else JFileChooser.FILES_ONLY
+    chooser.isAcceptAllFileFilterUsed = true
+    if (extension != null) chooser.fileFilter = FileNameExtensionFilter("Blockbox packs (*.$extension)", extension)
+    val result = chooser.showOpenDialog(null)
+    if (result == JFileChooser.APPROVE_OPTION) chooser.selectedFile?.toPath()?.toAbsolutePath()?.toString() else null
+} catch (_: Exception) {
+    null
+}
+
+private fun windowsPicker(title: String, extension: String?): String? = try {
+    val filter = if (extension == null) "All files (*.*)|*.*" else "Blockbox packs (*.$extension)|*.$extension|All files (*.*)|*.*"
+    val script = "Add-Type -AssemblyName System.Windows.Forms; " +
+        "\$d = New-Object System.Windows.Forms.OpenFileDialog; " +
+        "\$d.Title = '$title'; \$d.Filter = '$filter'; " +
+        "if (\$d.ShowDialog() -eq 'OK') { Write-Output \$d.FileName }"
+    runPicker(listOf("powershell", "-NoProfile", "-Command", script))
+} catch (_: Exception) {
+    null
+}
+
+private fun runPicker(command: List<String>): String? = try {
+    val process = ProcessBuilder(command).redirectErrorStream(true).start()
+    val text = BufferedReader(InputStreamReader(process.inputStream)).readText().trim()
+    val code = process.waitFor()
+    if (code == 0 && text.isNotBlank()) text.lines().first().trim().takeIf { it.isNotBlank() } else null
+} catch (_: Exception) {
+    null
 }
 
 fun openPath(path: Path): String = try {

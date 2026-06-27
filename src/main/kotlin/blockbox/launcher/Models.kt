@@ -15,8 +15,9 @@ data class InstanceConfig(
     var jvmArgs: String = "-XX:+UseG1GC -XX:+UnlockExperimentalVMOptions",
     var gameArgs: String = "",
     var envVars: String = "",
-    var useGameMode: Boolean = true,
-    var forceX11: Boolean = true,
+    var useGameMode: Boolean = false,
+    var forceX11: Boolean = false,
+    var displayBackend: String = "auto",
     var closeLauncherOnGameStart: Boolean = false,
     var lastPlayed: String = "Never"
 )

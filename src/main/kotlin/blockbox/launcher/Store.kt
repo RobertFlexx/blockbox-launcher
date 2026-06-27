@@ -66,11 +66,19 @@ class LauncherStore(
         copy.envVars = source.envVars
         copy.useGameMode = source.useGameMode
         copy.forceX11 = source.forceX11
+        copy.displayBackend = source.displayBackend
         copy.closeLauncherOnGameStart = source.closeLauncherOnGameStart
         copyPath(instanceDir(source).resolve("mods"), instanceDir(copy).resolve("mods"))
         copyPath(instanceDir(source).resolve("config"), instanceDir(copy).resolve("config"))
         saveInstance(copy)
         return copy
+    }
+
+    fun deleteInstance(config: InstanceConfig) {
+        val dir = instanceDir(config).toAbsolutePath().normalize()
+        val root = instancesRoot.toAbsolutePath().normalize()
+        require(dir.startsWith(root) && dir != root) { "Blocked unsafe instance delete target." }
+        if (dir.exists()) deletePath(dir)
     }
 
     fun saveInstance(config: InstanceConfig) {
@@ -85,7 +93,7 @@ class LauncherStore(
         props["gameArgs"] = config.gameArgs
         props["envVars"] = config.envVars
         props["useGameMode"] = config.useGameMode.toString()
-        props["forceX11"] = config.forceX11.toString()
+        props["displayBackend"] = config.displayBackend
         props["closeLauncherOnGameStart"] = config.closeLauncherOnGameStart.toString()
         props["lastPlayed"] = config.lastPlayed
         val dir = instanceDir(config)
@@ -110,11 +118,23 @@ class LauncherStore(
     }
 
     fun importMod(config: InstanceConfig, sourceText: String): String {
-        val source = Path.of(sourceText.trim()).toAbsolutePath()
+        val raw = sourceText.trim()
+        require(raw.isNotBlank()) { "Choose a mod file or folder first." }
+        val source = Path.of(raw).toAbsolutePath().normalize()
+        val modsRoot = modsDir(config).toAbsolutePath().normalize()
         require(source.exists()) { "File does not exist: $source" }
-        val target = modsDir(config).resolve(source.name)
+        require(source != modsRoot) { "Choose a mod inside the mods folder, not the mods folder itself." }
+        require(!modsRoot.startsWith(source)) { "Refusing to import a parent folder into its own mods directory." }
+        val allowed = source.isDirectory() || source.extension.lowercase() in setOf("jar", "groovy", "disabled")
+        require(allowed) { "Mods must be a .jar, .groovy file, or a mod folder." }
+        val target = modsRoot.resolve(source.name).normalize()
+        require(target != source) { "That mod is already installed in this instance." }
+        require(target.startsWith(modsRoot)) { "Blocked unsafe mod import target." }
+        if (target.exists()) {
+            throw IllegalArgumentException("A mod named ${source.name} already exists in this instance.")
+        }
         copyPath(source, target)
-        return "Imported ${source.name}"
+        return "Imported ${source.name} to ${target.absolutePathString()}"
     }
 
     fun toggleMod(mod: BlockboxMod): String {
@@ -122,6 +142,14 @@ class LauncherStore(
         val target = if (mod.enabled) path.resolveSibling(path.name + ".disabled") else path.resolveSibling(path.name.removeSuffix(".disabled"))
         Files.move(path, target, StandardCopyOption.REPLACE_EXISTING)
         return if (mod.enabled) "Disabled ${mod.name}" else "Enabled ${mod.name}"
+    }
+
+    fun deleteMod(config: InstanceConfig, mod: BlockboxMod): String {
+        val modsRoot = modsDir(config).toAbsolutePath().normalize()
+        val target = mod.path.toAbsolutePath().normalize()
+        require(target.startsWith(modsRoot) && target != modsRoot) { "Blocked unsafe mod delete target." }
+        deletePath(target)
+        return "Deleted ${mod.name}"
     }
 
     fun exportPack(config: InstanceConfig, includeWorlds: Boolean): Path {
@@ -145,8 +173,11 @@ class LauncherStore(
     }
 
     fun importPack(sourceText: String): InstanceConfig {
-        val source = Path.of(sourceText.trim()).toAbsolutePath()
+        val raw = sourceText.trim()
+        require(raw.isNotBlank()) { "Choose a .${PACK_EXTENSION} file first." }
+        val source = Path.of(raw).toAbsolutePath().normalize()
         require(source.exists()) { "Pack does not exist: $source" }
+        require(source.extension.equals(PACK_EXTENSION, ignoreCase = true)) { "Blockbox packs must end in .${PACK_EXTENSION}." }
         val config = createInstance(source.name.removeSuffix(".$PACK_EXTENSION"), "Imported Blockbox pack")
         ZipInputStream(source.inputStream()).use { zip ->
             var entry = zip.nextEntry
@@ -180,8 +211,9 @@ class LauncherStore(
             jvmArgs = props.getProperty("jvmArgs", ""),
             gameArgs = props.getProperty("gameArgs", ""),
             envVars = props.getProperty("envVars", ""),
-            useGameMode = props.getProperty("useGameMode", "true").toBoolean(),
-            forceX11 = props.getProperty("forceX11", "true").toBoolean(),
+            useGameMode = props.getProperty("useGameMode", "false").toBoolean(),
+            forceX11 = props.getProperty("forceX11", "false").toBoolean(),
+            displayBackend = props.getProperty("displayBackend") ?: if (props.getProperty("forceX11", "false").toBoolean()) "x11" else "auto",
             closeLauncherOnGameStart = props.getProperty("closeLauncherOnGameStart", "false").toBoolean(),
             lastPlayed = props.getProperty("lastPlayed", "Never")
         )
@@ -242,6 +274,22 @@ private fun copyPath(source: Path, target: Path) {
         target.parent.createDirectories()
         Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
     }
+}
+
+private fun deletePath(path: Path) {
+    if (!path.exists()) return
+    Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
+        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+            Files.deleteIfExists(file)
+            return FileVisitResult.CONTINUE
+        }
+
+        override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): FileVisitResult {
+            if (exc != null) throw exc
+            Files.deleteIfExists(dir)
+            return FileVisitResult.CONTINUE
+        }
+    })
 }
 
 private fun zipDir(start: Path, prefix: String, zip: ZipOutputStream) {

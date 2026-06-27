@@ -58,7 +58,8 @@ fun main() = application {
                 onLog = { line ->
                     logs += line
                     while (logs.size > 900) logs.removeAt(0)
-                }
+                },
+                onClearLogs = { logs.clear() }
             )
         }
     }
