@@ -27,6 +27,11 @@ fun main() = application {
         selected = instances.firstOrNull { it.id == selectedId } ?: instances.firstOrNull()
     }
 
+    fun refreshInstance(config: InstanceConfig) {
+        val index = instances.indexOfFirst { it.id == config.id }
+        if (index >= 0) instances[index] = config.copy()
+    }
+
     LaunchedEffect(Unit) { reloadInstances() }
 
     Window(onCloseRequest = ::exitApplication, title = "Blockbox Launcher") {
@@ -55,6 +60,7 @@ fun main() = application {
                 onStatus = { status = it },
                 onExitLauncher = ::exitApplication,
                 onInstancesChanged = ::reloadInstances,
+                onInstanceUpdated = ::refreshInstance,
                 onLog = { line ->
                     logs += line
                     while (logs.size > 900) logs.removeAt(0)

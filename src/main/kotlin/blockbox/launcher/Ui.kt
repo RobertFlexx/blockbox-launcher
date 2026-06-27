@@ -64,6 +64,7 @@ fun LauncherApp(
     onStatus: (String) -> Unit,
     onExitLauncher: () -> Unit,
     onInstancesChanged: () -> Unit,
+    onInstanceUpdated: (InstanceConfig) -> Unit,
     onLog: (String) -> Unit,
     onClearLogs: () -> Unit
 ) {
@@ -91,8 +92,8 @@ fun LauncherApp(
                 Spacer(Modifier.height(12.dp))
                 Box(Modifier.weight(1f).fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(PanelBg).border(1.dp, SoftLine, RoundedCornerShape(12.dp)).padding(18.dp)) {
                     if (selected == null) Text("Create an instance to begin.") else when (tab) {
-                        0 -> OverviewTab(store, selected, onStatus, onInstancesChanged, onSelect)
-                        1 -> SettingsTab(store, selected, onStatus)
+                        0 -> OverviewTab(store, selected, onStatus, onInstancesChanged, onInstanceUpdated, onSelect)
+                        1 -> SettingsTab(store, selected, onStatus, onInstanceUpdated)
                         2 -> ModsTab(store, selected, onStatus, onInstancesChanged)
                         else -> LogsTab(logs, onStatus, onClearLogs, selected?.let { store.logsDir(it) })
                     }
@@ -179,7 +180,7 @@ fun Header(selected: InstanceConfig?, status: String, running: Boolean, onLaunch
 }
 
 @Composable
-fun OverviewTab(store: LauncherStore, config: InstanceConfig, onStatus: (String) -> Unit, onInstancesChanged: () -> Unit, onSelect: (InstanceConfig) -> Unit) {
+fun OverviewTab(store: LauncherStore, config: InstanceConfig, onStatus: (String) -> Unit, onInstancesChanged: () -> Unit, onInstanceUpdated: (InstanceConfig) -> Unit, onSelect: (InstanceConfig) -> Unit) {
     var includeWorlds by remember(config.id) { mutableStateOf(false) }
     var confirmDelete by remember(config.id) { mutableStateOf(false) }
     if (confirmDelete) {
@@ -244,18 +245,21 @@ fun OverviewTab(store: LauncherStore, config: InstanceConfig, onStatus: (String)
                 config.useGameMode = false
                 config.displayBackend = "auto"
                 store.saveInstance(config)
+                onInstanceUpdated(config)
                 onStatus("Safe graphics settings saved: GameMode off, display backend auto")
             }) { Text("Safe Graphics Settings") }
             OutlinedButton(onClick = {
                 config.useGameMode = false
                 config.displayBackend = "x11-nvidia"
                 store.saveInstance(config)
+                onInstanceUpdated(config)
                 onStatus("NVIDIA X11 settings saved")
             }) { Text("NVIDIA X11 Preset") }
             OutlinedButton(onClick = {
                 config.displayBackend = "software"
                 config.useGameMode = false
                 store.saveInstance(config)
+                onInstanceUpdated(config)
                 onStatus("Software fallback settings saved")
             }) { Text("Software Preset") }
             Text("use this if launch fails before the window appears", color = MutedText, fontSize = 12.sp)
@@ -302,7 +306,7 @@ fun StatGrid(items: List<Pair<String, String>>) {
 }
 
 @Composable
-fun SettingsTab(store: LauncherStore, config: InstanceConfig, onStatus: (String) -> Unit) {
+fun SettingsTab(store: LauncherStore, config: InstanceConfig, onStatus: (String) -> Unit, onInstanceUpdated: (InstanceConfig) -> Unit) {
     var name by remember(config.id) { mutableStateOf(config.name) }
     var description by remember(config.id) { mutableStateOf(config.description) }
     var javaPath by remember(config.id) { mutableStateOf(config.javaPath) }
@@ -328,55 +332,57 @@ fun SettingsTab(store: LauncherStore, config: InstanceConfig, onStatus: (String)
         config.displayBackend = displayBackend
         config.forceX11 = displayBackend == "x11"
         config.closeLauncherOnGameStart = closeOnStart
+        onInstanceUpdated(config)
     }
 
     Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Profile", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        EditableText("Name", name) { name = it; config.name = it }
-        EditableText("Description", description) { description = it; config.description = it }
+        EditableText("Name", name) { name = it; config.name = it; onInstanceUpdated(config) }
+        EditableText("Description", description) { description = it; config.description = it; onInstanceUpdated(config) }
         Divider(color = SoftLine)
         Text("Java Runtime", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        EditableText("Java command", javaPath) { javaPath = it; config.javaPath = it }
+        EditableText("Java command", javaPath) { javaPath = it; config.javaPath = it; onInstanceUpdated(config) }
         Text("Use 'java' to let the game script auto-select the system JDK, or paste a full java path for this instance.", color = MutedText, fontSize = 12.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.weight(1f)) { EditableText("Minimum memory MB", minMemory) { minMemory = it.filter(Char::isDigit); minMemory.toIntOrNull()?.let { mb -> config.minMemoryMb = mb.coerceAtLeast(128) } } }
-            Box(Modifier.weight(1f)) { EditableText("Maximum memory MB", maxMemory) { maxMemory = it.filter(Char::isDigit); maxMemory.toIntOrNull()?.let { mb -> config.maxMemoryMb = mb.coerceAtLeast(128) } } }
+            Box(Modifier.weight(1f)) { EditableText("Minimum memory MB", minMemory) { minMemory = it.filter(Char::isDigit); minMemory.toIntOrNull()?.let { mb -> config.minMemoryMb = mb.coerceAtLeast(128); onInstanceUpdated(config) } } }
+            Box(Modifier.weight(1f)) { EditableText("Maximum memory MB", maxMemory) { maxMemory = it.filter(Char::isDigit); maxMemory.toIntOrNull()?.let { mb -> config.maxMemoryMb = mb.coerceAtLeast(128); onInstanceUpdated(config) } } }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(2048, 4096, 6144, 8192, 12288).forEach { mb ->
-                OutlinedButton(onClick = { maxMemory = mb.toString(); config.maxMemoryMb = mb; onStatus("Set max memory to ${mb}M") }) { Text("${mb / 1024}G") }
+                OutlinedButton(onClick = { maxMemory = mb.toString(); config.maxMemoryMb = mb; onInstanceUpdated(config); onStatus("Set max memory to ${mb}M") }) { Text("${mb / 1024}G") }
             }
             OutlinedButton(onClick = {
                 minMemory = "2048"
                 maxMemory = "8192"
                 config.minMemoryMb = 2048
                 config.maxMemoryMb = 8192
+                onInstanceUpdated(config)
                 onStatus("Applied balanced memory preset")
             }) { Text("Balanced") }
         }
-        MultilineText("JVM arguments", jvmArgs, "one or many args. quoted values are supported, for example: -Dblockbox.profile=\"Survival Instance\"", 4) { jvmArgs = it; config.jvmArgs = it }
+        MultilineText("JVM arguments", jvmArgs, "one or many args. quoted values are supported, for example: -Dblockbox.profile=\"Survival Instance\"", 4) { jvmArgs = it; config.jvmArgs = it; onInstanceUpdated(config) }
         Text("parsed JVM args: ${splitCommandLine(jvmArgs).size} custom + memory args", color = MutedText, fontSize = 12.sp)
         Divider(color = SoftLine)
         Text("Launch", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-        MultilineText("Game arguments", gameArgs, "optional game flags. these are forwarded after -- to blockbox.", 3) { gameArgs = it; config.gameArgs = it }
-        MultilineText("Environment variables", envVars, "KEY=value, one per line. example: BLOCKBOX_PLAYER_STYLE=builder", 4) { envVars = it; config.envVars = it }
-        ToggleRow("Launch with gamemoderun when available", useGameMode) { useGameMode = it; config.useGameMode = it }
+        MultilineText("Game arguments", gameArgs, "optional game flags. these are forwarded after -- to blockbox.", 3) { gameArgs = it; config.gameArgs = it; onInstanceUpdated(config) }
+        MultilineText("Environment variables", envVars, "KEY=value, one per line. example: BLOCKBOX_PLAYER_STYLE=builder", 4) { envVars = it; config.envVars = it; onInstanceUpdated(config) }
+        ToggleRow("Launch with gamemoderun when available", useGameMode) { useGameMode = it; config.useGameMode = it; onInstanceUpdated(config) }
         Text("turn this off if the game fails before opening a window", color = MutedText, fontSize = 12.sp)
         Text("Display backend", color = Color.White, fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("auto" to "Auto", "wayland" to "Wayland", "x11" to "X11", "x11-nvidia" to "X11 NVIDIA/GLX", "software" to "Software").forEach { (value, label) ->
                 val selected = displayBackend == value
                 if (selected) Button(onClick = {}, colors = ButtonDefaults.buttonColors(backgroundColor = AppAccent, contentColor = Color.White)) { Text(label) }
-                else OutlinedButton(onClick = { displayBackend = value; config.displayBackend = value }) { Text(label) }
+                else OutlinedButton(onClick = { displayBackend = value; config.displayBackend = value; config.forceX11 = value == "x11"; onInstanceUpdated(config) }) { Text(label) }
             }
         }
         Text("Auto lets GLFW choose. On Wayland desktops, use Wayland. On X11 desktops, use X11. X11 NVIDIA/GLX adds NV driver flags. Software uses llvmpipe (no GPU needed).", color = MutedText, fontSize = 12.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { displayBackend = "x11-nvidia"; config.displayBackend = "x11-nvidia"; useGameMode = false; config.useGameMode = false; onStatus("Selected NVIDIA X11 preset") }) { Text("Fix NVIDIA X11") }
-            OutlinedButton(onClick = { displayBackend = "wayland"; config.displayBackend = "wayland"; useGameMode = false; config.useGameMode = false; onStatus("Selected Wayland preset") }) { Text("Fix Wayland") }
-            OutlinedButton(onClick = { displayBackend = "software"; config.displayBackend = "software"; useGameMode = false; config.useGameMode = false; onStatus("Selected software fallback") }) { Text("Software Fallback") }
+            OutlinedButton(onClick = { displayBackend = "x11-nvidia"; config.displayBackend = "x11-nvidia"; useGameMode = false; config.useGameMode = false; onInstanceUpdated(config); onStatus("Selected NVIDIA X11 preset") }) { Text("Fix NVIDIA X11") }
+            OutlinedButton(onClick = { displayBackend = "wayland"; config.displayBackend = "wayland"; useGameMode = false; config.useGameMode = false; onInstanceUpdated(config); onStatus("Selected Wayland preset") }) { Text("Fix Wayland") }
+            OutlinedButton(onClick = { displayBackend = "software"; config.displayBackend = "software"; useGameMode = false; config.useGameMode = false; onInstanceUpdated(config); onStatus("Selected software fallback") }) { Text("Software Fallback") }
         }
-        ToggleRow("Close launcher on game start", closeOnStart) { closeOnStart = it; config.closeLauncherOnGameStart = it }
+        ToggleRow("Close launcher on game start", closeOnStart) { closeOnStart = it; config.closeLauncherOnGameStart = it; onInstanceUpdated(config) }
         Button(onClick = { syncConfig(); store.saveInstance(config); onStatus("Saved ${config.name}") }, colors = ButtonDefaults.buttonColors(backgroundColor = AppAccent, contentColor = Color.White)) { Text("Save Settings", fontWeight = FontWeight.Bold) }
     }
 }

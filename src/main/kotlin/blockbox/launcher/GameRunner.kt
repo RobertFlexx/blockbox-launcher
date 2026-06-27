@@ -20,12 +20,14 @@ class GameRunner(private val store: LauncherStore) {
         private set
     @Volatile private var emittedOpenGlHint = false
     @Volatile private var autoRelaunchConfig: InstanceConfig? = null
+    @Volatile private var stopping = false
 
     fun launch(config: InstanceConfig, onLog: (String) -> Unit, onExit: (Int) -> Unit) {
         if (process?.isAlive == true) {
             onLog("A game is already running.")
             return
         }
+        stopping = false
         val instanceDir = store.instanceDir(config)
         val logDir = store.logsDir(config)
         logDir.createDirectories()
@@ -164,7 +166,9 @@ class GameRunner(private val store: LauncherStore) {
             val code = started.waitFor()
             onLog("Blockbox exited with code $code")
             process = null
-            val relaunchConfig = autoRelaunchConfig
+            val wasStopping = stopping
+            stopping = false
+            val relaunchConfig = if (wasStopping) null else autoRelaunchConfig
             autoRelaunchConfig = null
             if (relaunchConfig != null) {
                 onLog("Auto-relaunching with config: display=${relaunchConfig.displayBackend}, GameMode=${relaunchConfig.useGameMode}")
@@ -177,7 +181,16 @@ class GameRunner(private val store: LauncherStore) {
     }
 
     fun stop() {
-        process?.destroy()
+        val running = process ?: return
+        stopping = true
+        autoRelaunchConfig = null
+        thread(name = "blockbox-stop", isDaemon = true) {
+            val handles = (running.toHandle().descendants().toList() + running.toHandle())
+                .sortedByDescending { it.pid() }
+            handles.forEach { handle -> if (handle.isAlive) handle.destroy() }
+            Thread.sleep(1500)
+            handles.forEach { handle -> if (handle.isAlive) handle.destroyForcibly() }
+        }
     }
 
     private fun nvidiaDrmAvailable(): Boolean = try {
