@@ -3,6 +3,8 @@
 build/
 instances/
 exports/
+cache/
+launcher.properties
 *.log
 *.bbpack
 .DS_Store

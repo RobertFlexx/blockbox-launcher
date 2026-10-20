@@ -1,72 +1,27 @@
 package blockbox.launcher
 
-import androidx.compose.material.MaterialTheme
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.window.Window
-import androidx.compose.ui.window.application
+import java.awt.GraphicsEnvironment
+import javax.swing.JOptionPane
+import javax.swing.SwingUtilities
 
-fun main() = application {
-    val store = remember { LauncherStore() }
-    val runner = remember { GameRunner(store) }
-    val instances = remember { mutableStateListOf<InstanceConfig>() }
-    val logs = remember { mutableStateListOf<String>() }
-    var selected by remember { mutableStateOf<InstanceConfig?>(null) }
-    var tab by remember { mutableStateOf(0) }
-    var status by remember { mutableStateOf("Ready") }
-
-    fun reloadInstances() {
-        val selectedId = selected?.id
-        instances.clear()
-        instances += store.loadInstances()
-        selected = instances.firstOrNull { it.id == selectedId } ?: instances.firstOrNull()
+fun main(args: Array<String>) {
+    if ("--version" in args) { println("Blockbox Launcher $LAUNCHER_VERSION"); return }
+    val dataIndex = args.indexOf("--data-dir")
+    if (dataIndex >= 0) {
+        require(dataIndex + 1 < args.size) { "--data-dir requires a directory." }
+        System.setProperty("blockbox.launcher.home", args[dataIndex + 1])
     }
-
-    fun refreshInstance(config: InstanceConfig) {
-        val index = instances.indexOfFirst { it.id == config.id }
-        if (index >= 0) instances[index] = config.copy()
+    // No Skia, OpenGL, D3D, or Metal renderer is needed for the launcher.
+    // Keep these overridable for systems where Java2D acceleration is preferred.
+    for (property in listOf("sun.java2d.opengl", "sun.java2d.d3d", "sun.java2d.metal")) {
+        if (System.getProperty(property) == null) System.setProperty(property, "false")
     }
-
-    LaunchedEffect(Unit) { reloadInstances() }
-
-    Window(onCloseRequest = ::exitApplication, title = "Blockbox Launcher") {
-        MaterialTheme(
-            colors = MaterialTheme.colors.copy(
-                primary = AppAccent,
-                secondary = AppGold,
-                background = AppBg,
-                surface = CardBg,
-                onPrimary = Color.White,
-                onSecondary = Color.Black,
-                onBackground = Color.White,
-                onSurface = Color.White
-            )
-        ) {
-            LauncherApp(
-                store = store,
-                runner = runner,
-                instances = instances,
-                selected = selected,
-                logs = logs,
-                tab = tab,
-                status = status,
-                onSelect = { selected = it },
-                onTab = { tab = it },
-                onStatus = { status = it },
-                onExitLauncher = ::exitApplication,
-                onInstancesChanged = ::reloadInstances,
-                onInstanceUpdated = ::refreshInstance,
-                onLog = { line ->
-                    logs += line
-                    while (logs.size > 900) logs.removeAt(0)
-                },
-                onClearLogs = { logs.clear() }
-            )
-        }
+    System.setProperty("apple.laf.useScreenMenuBar", "true")
+    System.setProperty("apple.awt.application.name", "Blockbox Launcher")
+    if (System.getProperty("awt.useSystemAAFontSettings") == null) System.setProperty("awt.useSystemAAFontSettings", "on")
+    if (GraphicsEnvironment.isHeadless()) { System.err.println("Blockbox Launcher needs a desktop display. Use --version for a headless check."); kotlin.system.exitProcess(1) }
+    SwingUtilities.invokeLater {
+        try { installTheme(); LauncherWindow().isVisible = true }
+        catch (e: Exception) { e.printStackTrace(); JOptionPane.showMessageDialog(null, e.message, "Blockbox Launcher could not start", JOptionPane.ERROR_MESSAGE) }
     }
 }

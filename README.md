@@ -1,261 +1,132 @@
-# blockbox launcher
+# Blockbox Launcher
 
-[blockbox](https://github.com/RobertFlexx/blockbox) launcher is the desktop launcher for [blockbox](https://github.com/RobertFlexx/blockbox).
+A classic desktop launcher for [Blockbox](https://github.com/RobertFlexx/blockbox), written in Kotlin. The interface uses Swing and Java2D, with resizable panes, keyboard navigation, and standard window decorations. It does not depend on Skia, OpenGL, Metal, or Direct3D to draw the launcher.
 
-it is made in kotlin with compose desktop. it is meant to feel more like a real instance launcher instead of just a run button.
+## Run
 
-the launcher is kept as its own standalone gradle project so it can be moved into a separate repo cleanly when needed.
+**Packaged application:** open **Blockbox Launcher** from your application menu, Start Menu, or Finder. The native application includes its own Java runtime. Gradle and a system Java installation are not needed to start it.
 
-## what it does right now
+**From source:** install **JDK 21**, then run:
 
-right now it has:
-
-* separate instances
-* per-instance mods
-* per-instance worlds
-* per-instance config
-* per-instance logs
-* custom java command
-* memory settings
-* jvm arguments
-* game arguments
-* environment variables
-* optional linux gamemode launch
-* display backend picker for auto, wayland, x11, x11 nvidia/glx, and software
-* quick graphics presets for safe mode, nvidia x11, wayland, and software fallback
-* mod importing
-* mod enable and disable
-* mod delete with confirmation
-* blockbox pack import and export
-* optional world export inside packs
-* live logs with ansi junk stripped out
-* live log clearing
-* instance duplicate
-* instance delete with confirmation
-* quick memory presets
-* buttons to open instance, mods, worlds, logs, exports, and game folders
-* native file picker support when your desktop has one installed
-
-it is still early, but it is already useful.
-
-## running it from source
-
-from the main blockbox folder:
-
-```bash
-./scripts/run-launcher.sh
-```
-
-or from this launcher folder on linux:
-
-```bash
+```sh
 ./scripts/run.sh
 ```
 
-on bsd:
+The first run uses the included, checksum-pinned Gradle wrapper to build the application. Later runs launch the built JAR directly, without invoking Gradle. If a native bundle has already been built, the run script uses it without requiring system Java. After editing source, rebuild explicitly:
 
 ```sh
-./scripts/run-bsd.sh
+./scripts/run.sh --rebuild
 ```
 
-on windows powershell:
+On Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\run-windows.ps1
+.\scripts\run-windows.ps1
+.\scripts\run-windows.ps1 -Rebuild
 ```
 
-you can also run gradle directly:
+`scripts/run-macos.sh` and `scripts/run-bsd.sh` use the same build-once flow. Use `BLOCKBOX_LAUNCHER_JAVA_HOME` to select a JDK. Source builds use JDK 21–23 with the pinned Gradle 8.10.2 wrapper; JDK 21 is recommended. The game can use a separate JDK selected in each instance's Settings.
 
-```bash
-gradle run
-```
+## Install from source
 
-if gradle or kotlin complains about java 25, use java 21. the root `scripts/run-launcher.sh` tries to pick java 21 automatically on linux.
+These installers reuse an existing application build, or build it once when missing, and copy it into your user directory. They do not require administrator access or run Gradle when the installed launcher starts. Updating replaces application files while keeping instances and worlds in their separate data directory. After editing source, pass `--rebuild` (`-Rebuild` in PowerShell) to build a fresh application before installing.
 
-## requirements
+| System | Command | Installed application |
+| --- | --- | --- |
+| Linux | `./scripts/install-linux.sh` | `~/.local/share/blockbox-launcher-app`, application menu, `~/.local/bin/blockbox-launcher` |
+| macOS | `./scripts/install-macos.sh` | `~/Applications/Blockbox Launcher.app` |
+| Windows | `.\scripts\install-windows.ps1` | `%LOCALAPPDATA%\Programs\Blockbox Launcher`, Start Menu shortcut |
+| BSD | `./scripts/install-bsd.sh` | `~/.local/share/blockbox-launcher-app`, application menu, `~/.local/bin/blockbox-launcher` |
 
-you need:
+Linux, macOS, and Windows installers create a native application image with a private runtime using JDK `jpackage`. Build each application on its target OS and architecture. No additional DEB/RPM/MSI packaging tools are required for the app image.
 
-* java 21 or newer
-* gradle 8 or newer, unless you use a packaged build later
-* a desktop that can run compose desktop
-* a valid blockbox game checkout
+BSD uses the portable JVM distribution because `jpackage` has no BSD backend. A local Java 21+ runtime is required there. Linux can also use `./scripts/install-linux.sh --portable` to install this smaller distribution without a bundled runtime.
 
-on linux and bsd, install the same graphics/runtime dependencies the game needs too, because the launcher starts the game from your local checkout.
-
-useful optional desktop tools:
-
-* `kdialog` for kde file pickers
-* `zenity` for gtk/gnome file pickers
-* `yad`, `qarma`, or `matedialog` as alternate file pickers
-* `xdg-open` for opening folders from buttons
-* `gamemoderun` if you want the gamemode toggle
-
-if none of the native file picker tools are installed, the launcher uses java swing's file chooser.
-
-## file picker notes
-
-the browse buttons try to use a desktop-native picker first.
-
-on linux and bsd the launcher looks for these tools:
-
-* `kdialog`
-* `zenity`
-* `yad`
-* `qarma`
-* `matedialog`
-
-if none of those are installed, it falls back to java swing's file chooser. this avoids the broken black awt file dialog that can happen on some wayland setups.
-
-if you want the picker to match your desktop better, install the picker for your desktop environment. for example, kde users usually want `kdialog`, and gtk desktop users usually want `zenity`.
-
-## installing on linux
-
-> install gradle 8+ and java 21 or later!
-
-from this launcher folder:
-
-```bash
-chmod +x scripts/install-linux.sh
-./scripts/install-linux.sh
-```
-
-this creates:
-
-```text
-~/.local/bin/blockbox-launcher
-~/.local/share/applications/blockbox-launcher.desktop
-```
-
-after that, your desktop menu should show blockbox launcher if your desktop environment reads local desktop entries.
-
-## installing on bsd
-
-from this launcher folder:
+Options:
 
 ```sh
-chmod +x scripts/install-bsd.sh
-./scripts/install-bsd.sh
+./scripts/install-linux.sh --prefix /absolute/path
+./scripts/install-linux.sh --portable --prefix /absolute/path
+BLOCKBOX_APPLICATIONS_DIR=/path/to/Applications ./scripts/install-macos.sh
 ```
-
-this creates the same kind of local launcher files as linux. desktop menu support depends on the desktop environment you use.
-
-## installing on windows
-
-from powershell inside this launcher folder:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-windows.ps1
+.\scripts\install-windows.ps1 -InstallDir 'D:\Games\Blockbox Launcher'
 ```
 
-this creates a start menu shortcut for blockbox launcher.
+The source folder can be moved after installation. Do not delete it if your existing instances are stored there; the launcher preserves legacy data locations rather than moving worlds automatically.
 
-## instances
+## Game setup
 
-instances live in:
+The launcher detects a sibling `blockbox` checkout or `~/blockbox`. Use **Launcher → Game location…** to choose another checkout; the choice is saved. `BLOCKBOX_GAME_ROOT` takes precedence over the saved location.
 
-```text
-launcher/instances/
+To run the game, install **Scala CLI** and a **JDK 21+**. The launcher runtime alone does not include a compiler. You can choose a Java executable per instance, set `BLOCKBOX_JAVA_HOME`, or use automatic JDK discovery. Set `BLOCKBOX_SCALA_CLI` when Scala CLI is outside PATH. On Windows select the native `scala-cli.exe`; batch shims are not supported because they cannot safely preserve arbitrary arguments without shell evaluation.
+
+The launcher compiles the game's Java helpers with the selected JDK, then runs Scala CLI with its Scala sources and LWJGL native jars for the current OS/CPU. Helpers and native jars are cached in launcher data; Scala CLI resolves the remaining dependencies on first launch. Build files stay in the instance's `.build/` directory. This avoids game scripts that change the working directory, hardcode Linux libraries, or install tools unexpectedly.
+
+Supported game native selections include Linux x86_64/ARM64, Windows x86_64/ARM64, and macOS Intel/Apple Silicon, plus the additional architectures listed in `Platform.kt`. Availability also depends on the game's LWJGL version. On BSD or other systems without published native libraries, set `BLOCKBOX_LWJGL_NATIVE_DIR` to compatible locally built LWJGL libraries. Running the launcher on a platform does not make unsupported game native libraries available.
+
+## Instances and data
+
+Each instance has its own `mods/`, `worlds/`, `config/`, `logs/`, and launch settings. The game runs with that instance as its working directory. Duplicating an instance copies worlds, mods, and configuration; it starts with fresh logs and play history.
+
+The game currently reads its own global graphics settings from `blockbox-settings.properties` in the game checkout. That game-side setting remains shared. Launcher memory, backend, arguments, and mod configuration are per instance.
+
+Existing `instances/` directories in the launcher checkout are reused. New installations default to:
+
+| System | Data directory |
+| --- | --- |
+| Linux / BSD | `${XDG_DATA_HOME:-~/.local/share}/blockbox-launcher` |
+| Windows | `%LOCALAPPDATA%\BlockboxLauncher` |
+| macOS | `~/Library/Application Support/BlockboxLauncher` |
+
+Set `BLOCKBOX_LAUNCHER_HOME`, or pass `--data-dir /path`, to select a data directory explicitly. Open the current location through **Launcher → Open launcher data**. Application updates do not delete this directory.
+
+Settings are validated and saved atomically. **Save settings** commits the whole form; switching instances or launching asks how to handle unsaved edits. Corrupt instance files are skipped with a Console message rather than preventing the launcher from opening.
+
+## Graphics
+
+The launcher's Java2D GPU pipelines are disabled by default to avoid driver-dependent rendering failures. Standard JVM system properties can override this when needed.
+
+Game graphics are separate, under **Settings → Game graphics**:
+
+* **Automatic:** preserves the system's graphics environment and lets GLFW choose.
+* **X11:** selects X11 without forcing an NVIDIA driver.
+* **Wayland:** selects Wayland/EGL and disables GLFW libdecor by default.
+* **NVIDIA X11 / GLX:** explicitly selects X11 with NVIDIA GLX.
+* **Software (Mesa):** requests llvmpipe. Requires Mesa and can be slow.
+
+These selectors are enabled on Linux/BSD. macOS and Windows use their native window systems. Per-instance environment overrides take precedence. GameMode is Linux-only, optional, and disabled by default.
+
+The launcher never kills a game merely because it uses software rendering, never changes a saved backend automatically, and never silently retries a failed launch. Use **Console** for the full error and **Diagnostics** for runtime, source, display, and native-library information. **Stop game** terminates the game and its captured child processes. Closing the launcher offers to keep the game running or stop it first.
+
+## Mods and packs
+
+Use **Mods → Import…** for a `.jar`, `.groovy` file, or mod directory. Enable/disable renames the entry using `.disabled`; a name collision produces an error instead of overwriting another mod. Import, delete, and enable/disable are disabled for the running instance.
+
+`.bbpack` archives contain metadata, mods, and mod configuration. **Include worlds** adds saved worlds for backups. Import restores the pack name and description and validates archive paths and format. Failed imports are rolled back. Exported packs do not contain private Java arguments or environment variables.
+
+## Shortcuts
+
+Use Ctrl on Windows/Linux/BSD and Command on macOS:
+
+* **Ctrl/Command + N:** new instance.
+* **Ctrl/Command + L:** launch selected instance.
+* **Ctrl/Command + S:** save settings.
+* **Ctrl/Command + 4:** console.
+
+## Build and verify
+
+```sh
+./gradlew check                 # regression tests
+./gradlew standaloneJar         # build/standalone/blockbox-launcher.jar
+./gradlew installDist           # build/install/blockbox-launcher/
+./gradlew packageApp            # build/native/Blockbox Launcher[.app]
+java -jar build/standalone/blockbox-launcher.jar --version
 ```
 
-each instance has its own folders:
+The GitHub Actions workflow tests and packages Linux, Windows, and macOS applications. Each native bundle includes the runtime for its build host. BSD uses a locally built portable distribution. Other OS and graphics-driver combinations still need testing on those machines.
 
-```text
-mods/
-worlds/
-config/
-logs/
-```
+Packaging references: [JDK application images](https://docs.oracle.com/en/java/javase/21/jpackage/packaging-overview.html), [Gradle application distributions](https://docs.gradle.org/current/userguide/application_plugin.html).
 
-this means you can have a vanilla instance, a modded instance, a testing instance, and a multiplayer instance without them stepping on each other.
-
-instances can be duplicated or deleted from the overview tab.
-
-delete has a confirmation dialog because it removes that whole instance folder, including mods, worlds, config, and logs. export a pack first if you want a backup.
-
-## graphics options
-
-each instance has its own display backend setting.
-
-available backends:
-
-* `auto`
-* `wayland`
-* `x11`
-* `x11-nvidia`
-* `software`
-
-`software` uses llvmpipe and is meant as a fallback, not the fast path.
-
-there are quick preset buttons for common driver problems:
-
-* safe graphics settings
-* nvidia x11 preset
-* software preset
-* fix nvidia x11
-* fix wayland
-* software fallback
-
-on linux, the launcher passes these settings to the game script instead of trying to do all the opengl setup itself.
-
-known graphics notes:
-
-* wayland can still be buggy on some nvidia systems
-* libdecor can fail and make the game window invisible on some desktops
-* x11 through xwayland may fail depending on driver setup
-* `software` uses llvmpipe and is expected to be slow
-* if game launch fails, try `x11-nvidia`, then `x11`, then `wayland`, then `software`
-
-## blockbox packs
-
-the launcher uses `.bbpack` files for blockbox launcher packs.
-
-a `.bbpack` is just a zip archive with blockbox launcher metadata and folders like:
-
-```text
-blockbox-pack.properties
-mods/
-config/
-worlds/        optional
-```
-
-worlds are not included unless you turn on the include worlds checkbox when exporting.
-
-mods can be imported, enabled, disabled, opened in the file manager, refreshed, or deleted from the mods tab.
-
-## current problems
-
-the launcher is useful, but still early.
-
-known issues:
-
-* native file pickers depend on what your desktop has installed
-* browse falls back to swing if `kdialog`, `zenity`, `yad`, `qarma`, or `matedialog` are missing
-* the launcher does not fully diagnose every gpu driver problem yet
-* launching with gamemode can make some driver/window problems worse
-* deleting an instance is permanent after the confirmation dialog
-* pack import/export is simple and does not try to solve dependency conflicts yet
-* multiplayer/modpack mismatch handling still depends on the game-side mod hash
-
-## standalone repo notes
-
-this folder is structured so it can be split out later.
-
-the launcher already has its own:
-
-* `settings.gradle.kts`
-* `build.gradle.kts`
-* `.gitignore`
-* `README.md`
-* install scripts
-* source tree
-
-if it becomes a real separate git repo, the launcher only needs to know where the blockbox game checkout is.
-
-you can point it at a game checkout with:
-
-```bash
-BLOCKBOX_GAME_ROOT=/path/to/blockbox gradle run
-```
-
-when it is still inside the main blockbox tree, it finds the game root automatically.
+Kotlin/Native was evaluated: this application's UI, file, archive, and process APIs use the JVM, and [Kotlin/Native's supported targets](https://kotlinlang.org/docs/native-target-support.html) do not include BSD. A native app image with a private JVM runtime provides standalone startup while retaining one desktop implementation across these systems.

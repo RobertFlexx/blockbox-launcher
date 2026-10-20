@@ -1,305 +1,275 @@
 package blockbox.launcher
 
-import java.nio.charset.StandardCharsets
-import java.nio.file.FileVisitResult
-import java.nio.file.Files
-import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.StandardCopyOption
+import java.io.StringReader
+import java.io.StringWriter
+import java.nio.file.*
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Properties
+import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
-import kotlin.io.path.absolutePathString
-import kotlin.io.path.createDirectories
-import kotlin.io.path.exists
-import kotlin.io.path.extension
-import kotlin.io.path.inputStream
-import kotlin.io.path.isDirectory
-import kotlin.io.path.name
-import kotlin.io.path.outputStream
-import kotlin.io.path.readText
-import kotlin.io.path.writeText
+import kotlin.io.path.*
 
-class LauncherStore(
-    val launcherRoot: Path = Path.of(System.getProperty("user.dir")).toAbsolutePath(),
-    val projectRoot: Path = resolveGameRoot(launcherRoot)
-) {
-    val instancesRoot: Path = launcherRoot.resolve("instances")
-    val exportsRoot: Path = launcherRoot.resolve("exports")
+class LauncherStore(val launcherRoot: Path = defaultDataRoot(), projectRoot: Path = resolveGameRoot(launcherRoot)) {
+    val instancesRoot = launcherRoot.resolve("instances").toAbsolutePath().normalize()
+    val exportsRoot = launcherRoot.resolve("exports").toAbsolutePath().normalize()
+    val warnings = mutableListOf<String>()
+    val preferences = Properties()
+    @Volatile var projectRoot: Path = projectRoot.toAbsolutePath().normalize()
+        private set
 
     init {
         instancesRoot.createDirectories()
         exportsRoot.createDirectories()
+        require(!Files.isSymbolicLink(instancesRoot)) { "The instances directory cannot be a symbolic link." }
+        val file = launcherRoot.resolve("launcher.properties")
+        if (file.exists()) runCatching { file.bufferedReader().use { preferences.load(it) } }
+            .onFailure { warnings += "Could not read launcher preferences: ${it.message}" }
+        // An explicit environment override always wins over a saved location.
+        if (System.getenv("BLOCKBOX_GAME_ROOT").isNullOrBlank()) preferences.getProperty("gameRoot")?.let { this.projectRoot = Path.of(it).toAbsolutePath().normalize() }
     }
 
-    fun loadInstances(): List<InstanceConfig> {
-        val instances = Files.list(instancesRoot).use { stream ->
-            stream.toList().filter { Files.isDirectory(it) }.mapNotNull { loadInstance(it) }
+    @Synchronized fun setGameRoot(path: Path) {
+        val root = path.toAbsolutePath().normalize()
+        require(root.resolve("src/main/scala/blockbox/Main.scala").isRegularFile()) { "Choose the Blockbox folder containing src/main/scala/blockbox/Main.scala." }
+        preferences.setProperty("gameRoot", root.toString())
+        savePreferences()
+        projectRoot = root
+    }
+
+    @Synchronized fun savePreferences() = writeProperties(launcherRoot.resolve("launcher.properties"), preferences)
+
+    @Synchronized fun loadInstances(): List<InstanceConfig> {
+        val instances = Files.list(instancesRoot).use { files ->
+            files.filter { it.isDirectory(LinkOption.NOFOLLOW_LINKS) && !it.name.startsWith('.') }.map { dir ->
+                try { loadInstance(dir) } catch (e: Exception) { warnings += "Skipped ${dir.name}: ${e.message}"; null }
+            }.toList().filterNotNull()
         }.sortedBy { it.name.lowercase() }
-        return instances.ifEmpty { listOf(createInstance("Default", "Main Blockbox profile")) }
+        return instances.ifEmpty { listOf(createInstance("Default", "Your first Blockbox instance")) }
     }
 
-    fun createInstance(name: String, description: String): InstanceConfig {
-        val config = InstanceConfig(name = cleanName(name), description = description.ifBlank { "Blockbox instance" })
+    @Synchronized fun createInstance(name: String, description: String): InstanceConfig {
+        val config = InstanceConfig(name = name.trim(), description = description)
+        config.validate()
         val dir = instanceDir(config)
-        dir.createDirectories()
-        dir.resolve("mods").createDirectories()
-        dir.resolve("worlds").createDirectories()
-        dir.resolve("config").createDirectories()
-        dir.resolve("logs").createDirectories()
-        saveInstance(config)
-        dir.resolve("README.txt").writeText("This folder is managed by Blockbox Launcher. Mods, worlds, config, and logs for '${config.name}' live here.\n")
-        return config
+        try {
+            listOf("mods", "worlds", "config", "logs").forEach { dir.resolve(it).createDirectories() }
+            saveInstance(config)
+            return config
+        } catch (e: Exception) { deletePath(dir); throw e }
     }
 
-    fun duplicateInstance(source: InstanceConfig): InstanceConfig {
-        val copy = createInstance("${source.name} Copy", source.description)
-        copy.javaPath = source.javaPath
-        copy.minMemoryMb = source.minMemoryMb
-        copy.maxMemoryMb = source.maxMemoryMb
-        copy.jvmArgs = source.jvmArgs
-        copy.gameArgs = source.gameArgs
-        copy.envVars = source.envVars
-        copy.useGameMode = source.useGameMode
-        copy.forceX11 = source.forceX11
-        copy.displayBackend = source.displayBackend
-        copy.closeLauncherOnGameStart = source.closeLauncherOnGameStart
-        copyPath(instanceDir(source).resolve("mods"), instanceDir(copy).resolve("mods"))
-        copyPath(instanceDir(source).resolve("config"), instanceDir(copy).resolve("config"))
-        saveInstance(copy)
-        return copy
+    @Synchronized fun duplicateInstance(source: InstanceConfig): InstanceConfig {
+        val copy = source.copy(id = UUID.randomUUID().toString(), name = (source.name.take(70) + " Copy"), lastPlayed = "Never")
+        val dir = instanceDir(copy)
+        try {
+            listOf("mods", "worlds", "config").forEach { copyPath(instanceDir(source).resolve(it), dir.resolve(it)) }
+            dir.resolve("logs").createDirectories()
+            saveInstance(copy)
+            return copy
+        } catch (e: Exception) { deletePath(dir); throw e }
     }
 
-    fun deleteInstance(config: InstanceConfig) {
-        val dir = instanceDir(config).toAbsolutePath().normalize()
-        val root = instancesRoot.toAbsolutePath().normalize()
-        require(dir.startsWith(root) && dir != root) { "Blocked unsafe instance delete target." }
-        if (dir.exists()) deletePath(dir)
-    }
+    @Synchronized fun deleteInstance(config: InstanceConfig) = deletePath(instanceDir(config))
 
-    fun saveInstance(config: InstanceConfig) {
-        val props = Properties()
-        props["id"] = config.id
-        props["name"] = config.name
-        props["description"] = config.description
-        props["javaPath"] = config.javaPath
-        props["minMemoryMb"] = config.minMemoryMb.toString()
-        props["maxMemoryMb"] = config.maxMemoryMb.toString()
-        props["jvmArgs"] = config.jvmArgs
-        props["gameArgs"] = config.gameArgs
-        props["envVars"] = config.envVars
-        props["useGameMode"] = config.useGameMode.toString()
-        props["displayBackend"] = config.displayBackend
-        props["closeLauncherOnGameStart"] = config.closeLauncherOnGameStart.toString()
-        props["lastPlayed"] = config.lastPlayed
-        val dir = instanceDir(config)
-        dir.createDirectories()
-        dir.resolve("instance.properties").outputStream().use { props.store(it, "Blockbox Launcher instance") }
-    }
-
-    fun instanceDir(config: InstanceConfig): Path = instancesRoot.resolve(config.id)
-    fun modsDir(config: InstanceConfig): Path = instanceDir(config).resolve("mods")
-    fun worldsDir(config: InstanceConfig): Path = instanceDir(config).resolve("worlds")
-    fun configDir(config: InstanceConfig): Path = instanceDir(config).resolve("config")
-    fun logsDir(config: InstanceConfig): Path = instanceDir(config).resolve("logs")
-
-    fun scanMods(config: InstanceConfig): List<BlockboxMod> {
-        val dir = modsDir(config)
-        dir.createDirectories()
-        return Files.list(dir).use { stream ->
-            stream.toList().filter { Files.isDirectory(it) || it.extension.lowercase() in setOf("jar", "groovy", "disabled") }
-                .map { modInfo(it) }
-                .sortedBy { it.name.lowercase() }
+    @Synchronized fun saveInstance(config: InstanceConfig) {
+        config.validate()
+        val props = Properties().apply {
+            setProperty("id", config.id); setProperty("name", config.name); setProperty("description", config.description)
+            setProperty("javaPath", config.javaPath); setProperty("minMemoryMb", config.minMemoryMb.toString()); setProperty("maxMemoryMb", config.maxMemoryMb.toString())
+            setProperty("jvmArgs", config.jvmArgs); setProperty("gameArgs", config.gameArgs); setProperty("envVars", config.envVars)
+            setProperty("useGameMode", config.useGameMode.toString()); setProperty("displayBackend", config.displayBackend)
+            setProperty("closeLauncherOnGameStart", config.closeLauncherOnGameStart.toString()); setProperty("lastPlayed", config.lastPlayed)
         }
+        writeProperties(instanceDir(config).resolve("instance.properties"), props)
     }
 
-    fun importMod(config: InstanceConfig, sourceText: String): String {
-        val raw = sourceText.trim()
-        require(raw.isNotBlank()) { "Choose a mod file or folder first." }
-        val source = Path.of(raw).toAbsolutePath().normalize()
-        val modsRoot = modsDir(config).toAbsolutePath().normalize()
-        require(source.exists()) { "File does not exist: $source" }
-        require(source != modsRoot) { "Choose a mod inside the mods folder, not the mods folder itself." }
-        require(!modsRoot.startsWith(source)) { "Refusing to import a parent folder into its own mods directory." }
-        val allowed = source.isDirectory() || source.extension.lowercase() in setOf("jar", "groovy", "disabled")
-        require(allowed) { "Mods must be a .jar, .groovy file, or a mod folder." }
-        val target = modsRoot.resolve(source.name).normalize()
-        require(target != source) { "That mod is already installed in this instance." }
-        require(target.startsWith(modsRoot)) { "Blocked unsafe mod import target." }
-        if (target.exists()) {
-            throw IllegalArgumentException("A mod named ${source.name} already exists in this instance.")
-        }
-        copyPath(source, target)
-        return "Imported ${source.name} to ${target.absolutePathString()}"
+    fun instanceDir(config: InstanceConfig): Path {
+        require(config.id.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,99}")) && config.id !in listOf(".", "..")) { "Invalid instance identifier." }
+        val dir = instancesRoot.resolve(config.id).normalize()
+        require(dir.parent == instancesRoot && !Files.isSymbolicLink(dir)) { "Unsafe instance path." }
+        return dir
+    }
+    private fun folder(config: InstanceConfig, name: String): Path = instanceDir(config).resolve(name).also {
+        require(!Files.isSymbolicLink(it)) { "Managed instance folders cannot be symbolic links: $name" }
+    }
+    fun modsDir(config: InstanceConfig) = folder(config, "mods")
+    fun worldsDir(config: InstanceConfig) = folder(config, "worlds")
+    fun configDir(config: InstanceConfig) = folder(config, "config")
+    fun logsDir(config: InstanceConfig) = folder(config, "logs")
+
+    @Synchronized fun scanMods(config: InstanceConfig): List<BlockboxMod> {
+        val dir = modsDir(config).createDirectories()
+        return Files.list(dir).use { files -> files.filter {
+            !Files.isSymbolicLink(it) && (it.isDirectory() || it.extension.lowercase() in setOf("jar", "groovy", "disabled"))
+        }.map { path ->
+            val json = if (path.isDirectory() && path.resolve("blockbox.mod.json").isRegularFile()) path.resolve("blockbox.mod.json").readText() else ""
+            val meta = Regex("\"([^\"]+)\"\\s*:\\s*\"([^\"]*)\"").findAll(json).associate { it.groupValues[1] to it.groupValues[2] }
+            BlockboxMod(path, !path.name.endsWith(".disabled"), meta["name"] ?: path.name.removeSuffix(".disabled").removeSuffix(".jar").removeSuffix(".groovy"), meta["version"] ?: "—", meta["side"] ?: "—", meta["description"] ?: "")
+        }.toList().sortedBy { it.name.lowercase() } }
     }
 
-    fun toggleMod(mod: BlockboxMod): String {
-        val path = mod.path
-        val target = if (mod.enabled) path.resolveSibling(path.name + ".disabled") else path.resolveSibling(path.name.removeSuffix(".disabled"))
-        Files.move(path, target, StandardCopyOption.REPLACE_EXISTING)
-        return if (mod.enabled) "Disabled ${mod.name}" else "Enabled ${mod.name}"
+    @Synchronized fun importMod(config: InstanceConfig, sourceText: String): String {
+        val source = Path.of(sourceText.trim()).toRealPath()
+        val root = modsDir(config).createDirectories().toRealPath()
+        require(source != root && !root.startsWith(source)) { "Choose a mod file or folder, rather than the mods directory or its parent." }
+        require(source.isDirectory() || source.extension.lowercase() in setOf("jar", "groovy", "disabled")) { "Choose a .jar, .groovy file, or mod folder." }
+        val target = root.resolve(source.name)
+        require(!target.exists(LinkOption.NOFOLLOW_LINKS)) { "${source.name} is already installed." }
+        try { copyPath(source, target) } catch (e: Exception) { deletePath(target); throw e }
+        return "Imported ${source.name}"
     }
 
-    fun deleteMod(config: InstanceConfig, mod: BlockboxMod): String {
-        val modsRoot = modsDir(config).toAbsolutePath().normalize()
-        val target = mod.path.toAbsolutePath().normalize()
-        require(target.startsWith(modsRoot) && target != modsRoot) { "Blocked unsafe mod delete target." }
-        deletePath(target)
+    @Synchronized fun toggleMod(config: InstanceConfig, mod: BlockboxMod): String {
+        val path = checkedModPath(config, mod)
+        val target = path.resolveSibling(if (mod.enabled) path.name + ".disabled" else path.name.removeSuffix(".disabled"))
+        require(!target.exists(LinkOption.NOFOLLOW_LINKS)) { "A mod named ${target.name} already exists. Rename or remove it first." }
+        Files.move(path, target)
+        return "${if (mod.enabled) "Disabled" else "Enabled"} ${mod.name}"
+    }
+
+    @Synchronized fun deleteMod(config: InstanceConfig, mod: BlockboxMod): String {
+        deletePath(checkedModPath(config, mod))
         return "Deleted ${mod.name}"
     }
-
-    fun exportPack(config: InstanceConfig, includeWorlds: Boolean): Path {
-        val safe = config.name.lowercase().replace(Regex("[^a-z0-9._-]+"), "-").trim('-').ifBlank { "blockbox-pack" }
-        val stamp = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").format(LocalDateTime.now())
-        val output = exportsRoot.resolve("$safe-$stamp.$PACK_EXTENSION")
-        ZipOutputStream(output.outputStream()).use { zip ->
-            fun putText(name: String, text: String) {
-                zip.putNextEntry(ZipEntry(name))
-                zip.write(text.toByteArray(StandardCharsets.UTF_8))
-                zip.closeEntry()
-            }
-            putText("blockbox-pack.properties", "format=Blockbox Launcher Pack\nformatVersion=1\nname=${config.name}\ndescription=${config.description}\nincludeWorlds=$includeWorlds\ncreated=$stamp\n")
-            val include = if (includeWorlds) listOf("mods", "config", "worlds") else listOf("mods", "config")
-            for (folder in include) {
-                val start = instanceDir(config).resolve(folder)
-                if (start.exists()) zipDir(start, folder, zip)
-            }
-        }
-        return output
+    private fun checkedModPath(config: InstanceConfig, mod: BlockboxMod): Path = mod.path.toAbsolutePath().normalize().also {
+        require(it.parent == modsDir(config).toAbsolutePath().normalize() && !Files.isSymbolicLink(it)) { "Unsafe mod path." }
     }
 
-    fun importPack(sourceText: String): InstanceConfig {
-        val raw = sourceText.trim()
-        require(raw.isNotBlank()) { "Choose a .${PACK_EXTENSION} file first." }
-        val source = Path.of(raw).toAbsolutePath().normalize()
-        require(source.exists()) { "Pack does not exist: $source" }
-        require(source.extension.equals(PACK_EXTENSION, ignoreCase = true)) { "Blockbox packs must end in .${PACK_EXTENSION}." }
-        val config = createInstance(source.name.removeSuffix(".$PACK_EXTENSION"), "Imported Blockbox pack")
-        ZipInputStream(source.inputStream()).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                val name = entry.name.replace('\\', '/')
-                if (!entry.isDirectory && (name.startsWith("mods/") || name.startsWith("config/") || name.startsWith("worlds/"))) {
-                    val target = instanceDir(config).resolve(name).normalize()
-                    require(target.startsWith(instanceDir(config))) { "Blocked unsafe pack entry: $name" }
-                    target.parent.createDirectories()
-                    Files.copy(zip, target, StandardCopyOption.REPLACE_EXISTING)
+    @Synchronized fun exportPack(config: InstanceConfig, includeWorlds: Boolean): Path {
+        val safe = config.name.lowercase().replace(Regex("[^a-z0-9._-]+"), "-").trim('-').ifBlank { "instance" }
+        val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS"))
+        val output = exportsRoot.resolve("$safe-$stamp.$PACK_EXTENSION")
+        val temp = Files.createTempFile(exportsRoot, ".export-", ".tmp")
+        try {
+            ZipOutputStream(temp.outputStream()).use { zip ->
+                val meta = Properties().apply {
+                    setProperty("format", "Blockbox Launcher Pack"); setProperty("formatVersion", "1")
+                    setProperty("name", config.name); setProperty("description", config.description)
+                    setProperty("includeWorlds", includeWorlds.toString())
                 }
-                zip.closeEntry()
-                entry = zip.nextEntry
+                zip.putNextEntry(ZipEntry("blockbox-pack.properties"))
+                zip.write(StringWriter().also { meta.store(it, "Blockbox pack") }.toString().toByteArray(Charsets.UTF_8)); zip.closeEntry()
+                (listOf("mods", "config") + if (includeWorlds) listOf("worlds") else emptyList()).forEach { name ->
+                    val root = folder(config, name)
+                    if (root.exists()) Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+                        override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                            zip.putNextEntry(ZipEntry("$name/" + root.relativize(dir).toString().replace('\\', '/').let { if (it.isBlank()) "" else "$it/" })); zip.closeEntry()
+                            return FileVisitResult.CONTINUE
+                        }
+                        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                            require(!attrs.isSymbolicLink) { "Packs cannot contain symbolic links: $file" }
+                            zip.putNextEntry(ZipEntry("$name/" + root.relativize(file).toString().replace('\\', '/')))
+                            Files.copy(file, zip); zip.closeEntry(); return FileVisitResult.CONTINUE
+                        }
+                    })
+                }
             }
-        }
-        return config
+            Files.move(temp, output)
+            return output
+        } finally { Files.deleteIfExists(temp) }
+    }
+
+    @Synchronized fun importPack(sourceText: String): InstanceConfig {
+        val source = Path.of(sourceText.trim()).toAbsolutePath().normalize()
+        require(source.isRegularFile() && source.extension.equals(PACK_EXTENSION, true)) { "Choose an existing .$PACK_EXTENSION file." }
+        val id = UUID.randomUUID().toString()
+        val staging = Files.createTempDirectory(instancesRoot, ".import-")
+        var total = 0L
+        var entries = 0
+        var metadata: Properties? = null
+        val seen = mutableSetOf<Path>()
+        try {
+            ZipInputStream(source.inputStream()).use { zip ->
+                var entry = zip.nextEntry
+                val buffer = ByteArray(32 * 1024)
+                while (entry != null) {
+                    require(++entries <= 100_000) { "Pack contains too many entries." }
+                    val name = entry.name.replace('\\', '/')
+                    val target = staging.resolve(name).normalize()
+                    require(!name.startsWith('/') && ':' !in name && name.split('/').none { it == ".." } && target.startsWith(staging) && target != staging) { "Unsafe pack entry: $name" }
+                    require(seen.add(target)) { "Duplicate pack entry: $name" }
+                    val allowed = name == "blockbox-pack.properties" || name.substringBefore('/') in listOf("mods", "worlds", "config")
+                    if (allowed) {
+                        if (entry.isDirectory) target.createDirectories()
+                        else {
+                            target.parent.createDirectories()
+                            target.outputStream().use { out ->
+                                var n = zip.read(buffer)
+                                while (n >= 0) {
+                                    total += n
+                                    require(total <= 8L * 1024 * 1024 * 1024) { "Unpacked pack exceeds 8 GiB." }
+                                    if (name == "blockbox-pack.properties") require(outSize(target, n) <= 1024 * 1024) { "Pack metadata is too large." }
+                                    out.write(buffer, 0, n); n = zip.read(buffer)
+                                }
+                            }
+                            if (name == "blockbox-pack.properties") metadata = Properties().apply { target.bufferedReader().use { load(it) } }
+                        }
+                    }
+                    zip.closeEntry(); entry = zip.nextEntry
+                }
+            }
+            val meta = metadata ?: error("This archive has no Blockbox pack metadata.")
+            require(meta.getProperty("format") == "Blockbox Launcher Pack" && meta.getProperty("formatVersion") == "1") { "Unsupported Blockbox pack format." }
+            val config = InstanceConfig(id = id, name = meta.getProperty("name", source.nameWithoutExtension).trim().take(80).ifBlank { "Imported instance" }, description = meta.getProperty("description", "Imported Blockbox pack"))
+            Files.deleteIfExists(staging.resolve("blockbox-pack.properties"))
+            listOf("mods", "worlds", "config", "logs").forEach { staging.resolve(it).createDirectories() }
+            Files.move(staging, instanceDir(config))
+            try { saveInstance(config) } catch (e: Exception) { deletePath(instanceDir(config)); throw e }
+            return config
+        } finally { deletePath(staging) }
     }
 
     private fun loadInstance(dir: Path): InstanceConfig? {
         val file = dir.resolve("instance.properties")
-        if (!file.exists()) return null
-        val props = Properties()
-        file.inputStream().use { props.load(it) }
+        if (!file.isRegularFile(LinkOption.NOFOLLOW_LINKS)) return null
+        val p = Properties().apply { file.bufferedReader().use { load(it) } }
+        // The directory name is authoritative. Never trust a path in metadata.
+        val min = (p.getProperty("minMemoryMb")?.toIntOrNull() ?: 512).coerceIn(128, 1_048_576)
         return InstanceConfig(
-            id = props.getProperty("id", dir.name),
-            name = props.getProperty("name", dir.name),
-            description = props.getProperty("description", "Blockbox instance"),
-            javaPath = props.getProperty("javaPath", "java"),
-            minMemoryMb = props.getProperty("minMemoryMb", "1024").toIntOrNull() ?: 1024,
-            maxMemoryMb = props.getProperty("maxMemoryMb", "4096").toIntOrNull() ?: 4096,
-            jvmArgs = props.getProperty("jvmArgs", ""),
-            gameArgs = props.getProperty("gameArgs", ""),
-            envVars = props.getProperty("envVars", ""),
-            useGameMode = props.getProperty("useGameMode", "false").toBoolean(),
-            forceX11 = props.getProperty("forceX11", "false").toBoolean(),
-            displayBackend = props.getProperty("displayBackend") ?: if (props.getProperty("forceX11", "false").toBoolean()) "x11" else "auto",
-            closeLauncherOnGameStart = props.getProperty("closeLauncherOnGameStart", "false").toBoolean(),
-            lastPlayed = props.getProperty("lastPlayed", "Never")
-        )
+            id = dir.name, name = p.getProperty("name", dir.name).take(80).ifBlank { dir.name }, description = p.getProperty("description", "Blockbox instance"),
+            javaPath = p.getProperty("javaPath", "java"), minMemoryMb = min, maxMemoryMb = (p.getProperty("maxMemoryMb")?.toIntOrNull() ?: 4096).coerceIn(min, 1_048_576),
+            jvmArgs = p.getProperty("jvmArgs", ""), gameArgs = p.getProperty("gameArgs", ""), envVars = p.getProperty("envVars", ""),
+            useGameMode = p.getProperty("useGameMode", "false").toBoolean(),
+            displayBackend = (p.getProperty("displayBackend") ?: if (p.getProperty("forceX11").toBoolean()) "x11" else "auto").takeIf { it in DISPLAY_BACKENDS } ?: "auto",
+            closeLauncherOnGameStart = p.getProperty("closeLauncherOnGameStart", "false").toBoolean(), lastPlayed = p.getProperty("lastPlayed", "Never")
+        ).also { instanceDir(it) }
     }
-
-    private fun modInfo(path: Path): BlockboxMod {
-        val enabled = !path.name.endsWith(".disabled")
-        val displayPath = path.name.removeSuffix(".disabled")
-        val metadata = readMetadata(path)
-        return BlockboxMod(
-            path = path,
-            enabled = enabled,
-            name = metadata["name"] ?: displayPath.removeSuffix(".jar").removeSuffix(".groovy"),
-            version = metadata["version"] ?: "unknown",
-            side = metadata["side"] ?: "unknown",
-            description = metadata["description"] ?: "No description"
-        )
-    }
-
-    private fun readMetadata(path: Path): Map<String, String> {
-        val json = when {
-            path.isDirectory() && path.resolve("blockbox.mod.json").exists() -> path.resolve("blockbox.mod.json").readText()
-            else -> ""
-        }
-        if (json.isBlank()) return emptyMap()
-        return Regex("\\\"([^\\\"]+)\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"").findAll(json).associate { it.groupValues[1] to it.groupValues[2] }
-    }
-
-    private fun cleanName(value: String): String = value.trim().ifBlank { "Blockbox Instance" }.take(48)
 }
 
-private fun resolveGameRoot(launcherRoot: Path): Path {
-    val envRoot = System.getenv("BLOCKBOX_GAME_ROOT")?.takeIf { it.isNotBlank() }?.let { Path.of(it).toAbsolutePath() }
-    if (envRoot != null) return envRoot
-    val parent = launcherRoot.parent ?: launcherRoot
-    val sibling = parent.resolve("blockbox")
-    return when {
-        parent.resolve("src/main/scala/blockbox/Main.scala").exists() -> parent
-        sibling.resolve("src/main/scala/blockbox/Main.scala").exists() -> sibling
-        else -> launcherRoot
-    }
+private fun outSize(path: Path, count: Int) = Files.size(path) + count
+
+fun writeProperties(file: Path, properties: Properties) {
+    file.parent.createDirectories()
+    val temp = Files.createTempFile(file.parent, ".settings-", ".tmp")
+    try {
+        temp.bufferedWriter().use { properties.store(it, "Blockbox Launcher") }
+        try { Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) }
+        catch (_: AtomicMoveNotSupportedException) { Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING) }
+    } finally { Files.deleteIfExists(temp) }
 }
 
 private fun copyPath(source: Path, target: Path) {
-    if (source.isDirectory()) {
-        Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
-            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                target.resolve(source.relativize(dir).toString()).createDirectories()
-                return FileVisitResult.CONTINUE
-            }
-
-            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                Files.copy(file, target.resolve(source.relativize(file).toString()), StandardCopyOption.REPLACE_EXISTING)
-                return FileVisitResult.CONTINUE
-            }
-        })
-    } else {
-        target.parent.createDirectories()
-        Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
-    }
-}
-
-private fun deletePath(path: Path) {
-    if (!path.exists()) return
-    Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
-        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-            Files.deleteIfExists(file)
-            return FileVisitResult.CONTINUE
+    if (!source.exists(LinkOption.NOFOLLOW_LINKS)) { target.createDirectories(); return }
+    Files.walkFileTree(source, object : SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+            target.resolve(source.relativize(dir).toString()).createDirectories(); return FileVisitResult.CONTINUE
         }
-
-        override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): FileVisitResult {
-            if (exc != null) throw exc
-            Files.deleteIfExists(dir)
-            return FileVisitResult.CONTINUE
+        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+            require(!attrs.isSymbolicLink) { "Importing symbolic links is not supported: $file" }
+            val out = if (source.isDirectory()) target.resolve(source.relativize(file).toString()) else target
+            out.parent.createDirectories(); Files.copy(file, out); return FileVisitResult.CONTINUE
         }
     })
 }
 
-private fun zipDir(start: Path, prefix: String, zip: ZipOutputStream) {
-    Files.walkFileTree(start, object : SimpleFileVisitor<Path>() {
-        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-            val entryName = prefix + "/" + start.relativize(file).toString().replace('\\', '/')
-            zip.putNextEntry(ZipEntry(entryName))
-            Files.copy(file, zip)
-            zip.closeEntry()
-            return FileVisitResult.CONTINUE
-        }
+private fun deletePath(path: Path) {
+    if (!path.exists(LinkOption.NOFOLLOW_LINKS)) return
+    Files.walkFileTree(path, object : SimpleFileVisitor<Path>() {
+        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult { Files.delete(file); return FileVisitResult.CONTINUE }
+        override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): FileVisitResult { if (exc != null) throw exc; Files.delete(dir); return FileVisitResult.CONTINUE }
     })
 }

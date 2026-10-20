@@ -1,26 +1,20 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+LAUNCHER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/common.sh"
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-LAUNCHER_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-
-if [[ -n "${BLOCKBOX_LAUNCHER_JAVA_HOME:-}" ]]; then
-  export JAVA_HOME="${BLOCKBOX_LAUNCHER_JAVA_HOME}"
-else
-  for candidate in /opt/openjdk-bin-21 /usr/lib/jvm/openjdk-21 /usr/lib/jvm/openjdk-bin-21 /usr/lib/jvm/java-21-openjdk; do
-    if [[ -x "${candidate}/bin/java" ]]; then
-      export JAVA_HOME="${candidate}"
-      break
-    fi
-  done
+launcher_rebuild=0
+if [ "${1:-}" = '--rebuild' ]; then launcher_rebuild=1; shift; fi
+launcher_native=$LAUNCHER_ROOT/build/native/Blockbox\ Launcher/bin/Blockbox\ Launcher
+if [ "$(uname -s)" = Darwin ]; then launcher_native=$LAUNCHER_ROOT/build/native/Blockbox\ Launcher.app/Contents/MacOS/Blockbox\ Launcher; fi
+if [ -x "$launcher_native" ]; then
+  if [ "$launcher_rebuild" -eq 1 ]; then launcher_build standaloneJar packageApp; fi
+  exec "$launcher_native" "$@"
 fi
-
-if [[ -n "${JAVA_HOME:-}" ]]; then
-  export PATH="${JAVA_HOME}/bin:${PATH}"
-  GRADLE_JAVA_OPT="-Dorg.gradle.java.home=${JAVA_HOME}"
-else
-  GRADLE_JAVA_OPT=""
+if [ "$launcher_rebuild" -eq 1 ] || [ ! -f "$LAUNCHER_ROOT/build/standalone/blockbox-launcher.jar" ]; then
+  launcher_build standaloneJar
 fi
-
-cd "${LAUNCHER_ROOT}"
-exec gradle --no-daemon ${GRADLE_JAVA_OPT} run
+launcher_java
+# Launches after the first build never invoke Gradle.
+exec "$JAVA_COMMAND" -Xms32m -Xmx256m -jar "$LAUNCHER_ROOT/build/standalone/blockbox-launcher.jar" "$@"
