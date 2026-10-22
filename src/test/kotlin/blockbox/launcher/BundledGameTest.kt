@@ -42,7 +42,8 @@ class BundledGameTest {
         val plan = LaunchPlanner(store, inheritedEnv = mapOf("PATH" to "", "BLOCKBOX_SCALA_CLI" to "/missing/scala-cli"),
             resolveNative = { _, _, _ -> fail("Installed game must not fetch native jars") },
             resolveGameJar = { _, _ -> fail("Installed game must not invoke the source build") }).prepare(config)
-        assertEquals(executable.toString(), plan.command.first())
+        // macOS /var and Windows short temp names can resolve to another spelling.
+        assertEquals(executable.toRealPath(), Path.of(plan.command.first()).toRealPath())
         assertTrue(plan.command.windowed(2).any { it == listOf("-jar", root.resolve("blockbox-game.jar").toString()) })
         assertEquals(store.instanceDir(config), plan.directory)
         assertEquals(store.configDir(config).resolve("game").toString(), plan.environment["BLOCKBOX_PROJECT_ROOT"])
