@@ -52,6 +52,13 @@ class LaunchPlanner @JvmOverloads constructor(
         val jvmArgs = listOf("-Xms${config.minMemoryMb}M", "-Xmx${config.maxMemoryMb}M", "--enable-native-access=ALL-UNNAMED") + splitCommandLine(config.jvmArgs)
         if (platform == HostPlatform.MACOS) command += "--java-opt=-XstartOnFirstThread"
         jvmArgs.forEach { command += "--java-opt=$it" }
+        // The instance directory is the working directory, so worlds and mods stay
+        // per profile. Recorded footsteps and weather live in the game checkout.
+        val audioRoot = store.projectRoot.resolve("assets/audio").toAbsolutePath().normalize()
+        if (audioRoot.isDirectory() && jvmArgs.none { it.startsWith("-Dblockbox.audioRoot=") }) {
+            command += "--java-opt=-Dblockbox.audioRoot=$audioRoot"
+            log("Sounds: $audioRoot")
+        }
 
         val customNatives = env["BLOCKBOX_LWJGL_NATIVE_DIR"]?.takeIf { it.isNotBlank() }
         if (customNatives != null) {

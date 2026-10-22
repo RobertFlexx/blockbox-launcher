@@ -64,6 +64,8 @@ To run the game, install **Scala CLI** and a **JDK 21+**. The launcher runtime a
 
 The launcher compiles the game's Java helpers with the selected JDK, then runs Scala CLI with its Scala sources and LWJGL native jars for the current OS/CPU. Helpers and native jars are cached in launcher data; Scala CLI resolves the remaining dependencies on first launch. Build files stay in the instance's `.build/` directory. This avoids game scripts that change the working directory, hardcode Linux libraries, or install tools unexpectedly.
 
+The instance folder is the working directory, so each profile keeps its own worlds and mods. Recorded sound effects still come from that game checkout's `assets/audio` (footsteps, impacts, rain, and thunder). A custom `-Dblockbox.audioRoot=...` in the instance JVM arguments overrides it.
+
 Supported game native selections include Linux x86_64/ARM64, Windows x86_64/ARM64, and macOS Intel/Apple Silicon, plus the additional architectures listed in `Platform.kt`. Availability also depends on the game's LWJGL version. On BSD or other systems without published native libraries, set `BLOCKBOX_LWJGL_NATIVE_DIR` to compatible locally built LWJGL libraries. Running the launcher on a platform does not make unsupported game native libraries available.
 
 ## Instances and data

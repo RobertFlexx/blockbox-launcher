@@ -142,6 +142,21 @@ class LauncherTest {
         assertTrue(mac.command.any { it.startsWith("--extra-jar=") && "natives-macos-arm64.jar" in it })
     }
 
+    @Test fun `launch uses the game checkout for recorded sound effects`() {
+        val store = store()
+        store.projectRoot.resolve("src/main/scala/blockbox").createDirectories().resolve("Main.scala").writeText("//> using dep \"org.lwjgl:lwjgl:3.4.1\"\n")
+        val sounds = store.projectRoot.resolve("assets/audio/kenney").createDirectories()
+        sounds.resolve("footstep_grass_000.ogg").writeText("ogg")
+        val bin = temp.resolve("jdk/bin").createDirectories()
+        listOf("java", "javac").forEach { bin.resolve(it).writeText(""); bin.resolve(it).toFile().setExecutable(true) }
+        val scala = temp.resolve("scala-cli").apply { writeText(""); toFile().setExecutable(true) }
+        val env = mapOf("JAVA_HOME" to bin.parent.toString(), "BLOCKBOX_SCALA_CLI" to scala.toString(), "PATH" to bin.toString())
+        val config = store.createInstance("Sounds", "")
+        val plan = LaunchPlanner(store, HostPlatform.LINUX, "amd64", env) { _, _, _ -> temp.resolve("natives.jar") }.prepare(config)
+        assertEquals(store.instanceDir(config), plan.directory)
+        assertTrue(plan.command.any { it == "--java-opt=-Dblockbox.audioRoot=${sounds.parent.toAbsolutePath().normalize()}" })
+    }
+
     @Test fun `process failure resets launch state and permits retry`() {
         if (HostPlatform.detect() == HostPlatform.WINDOWS) return
         val store = store()
