@@ -11,6 +11,10 @@ fun main(args: Array<String>) {
         require(dataIndex + 1 < args.size) { "--data-dir requires a directory." }
         System.setProperty("blockbox.launcher.home", args[dataIndex + 1])
     }
+    if ("--check-game" in args) {
+        try { kotlin.system.exitProcess(checkIncludedGame()) }
+        catch (e: Exception) { System.err.println(e.message); kotlin.system.exitProcess(1) }
+    }
     // No Skia, OpenGL, D3D, or Metal renderer is needed for the launcher.
     // Keep these overridable for systems where Java2D acceleration is preferred.
     for (property in listOf("sun.java2d.opengl", "sun.java2d.d3d", "sun.java2d.metal")) {

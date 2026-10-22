@@ -11,6 +11,64 @@ import java.util.jar.JarOutputStream
 import kotlin.io.path.*
 
 class GameBuildCache(private val cache: Path) {
+    fun gameJar(
+        sourceRoot: Path, javaHome: Path, platform: HostPlatform, arch: String,
+        env: Map<String, String>, log: (String) -> Unit, cancelled: () -> Boolean,
+        onProcess: (Process?) -> Unit, resolveNative: ((String, String, String) -> Path)? = null
+    ): Path {
+        val customNatives = env["BLOCKBOX_LWJGL_NATIVE_DIR"]?.takeIf { it.isNotBlank() }
+        val settings = listOf("COURSIER_REPOSITORIES", "SCALA_CLI_CONFIG", "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
+            .associateWith { env[it].orEmpty() } + ("bundledNatives" to (customNatives == null).toString())
+        return CompiledGameCache(cache).getOrBuild(sourceRoot, javaHome, platform, arch, settings, log, cancelled) { output, workspace ->
+            val scala = findExecutable(env["BLOCKBOX_SCALA_CLI"] ?: "scala-cli", env, platform)
+                ?: error("Scala CLI is needed for the first build or after source changes. Install scala-cli or set BLOCKBOX_SCALA_CLI.")
+            require(platform != HostPlatform.WINDOWS || scala.extension.lowercase() !in listOf("cmd", "bat")) {
+                "Select the native scala-cli.exe using BLOCKBOX_SCALA_CLI; batch shims cannot safely forward build arguments."
+            }
+            val command = mutableListOf(scala.toString(), "--power", "package", sourceRoot.resolve("src/main/scala").toString(),
+                "--assembly", "--preamble=false", "--server=false", "--java-home", javaHome.toString(), "--workspace", workspace.toString(), "--output", output.toString())
+            javaHelpers(sourceRoot, javaHome, env, log, cancelled, onProcess)?.let { command += "--extra-jar=$it" }
+            sourceRoot.resolve("src/main/resources").takeIf { it.isDirectory() }?.let { command += "--resource-dir=$it" }
+            if (customNatives == null) {
+                val classifier = nativeClassifier(platform, arch)
+                    ?: error("No bundled LWJGL natives for $platform/$arch. Set BLOCKBOX_LWJGL_NATIVE_DIR to compatible native libraries.")
+                val dependencies = gameBuildInputs(sourceRoot).filter { it.extension in listOf("scala", "java", "sc") }
+                    .flatMap { source -> Regex("org\\.lwjgl:(lwjgl(?:-[a-z0-9-]+)?):([0-9][A-Za-z0-9.+_-]*)").findAll(source.readText())
+                        .map { it.groupValues[1] to it.groupValues[2] }.toList() }.distinct()
+                require(dependencies.isNotEmpty()) { "No LWJGL dependencies were found in the game sources." }
+                dependencies.filter { lwjglNeedsNativeJar(it.first, platform) }.forEach { (module, version) ->
+                    val jar = resolveNative?.invoke(module, version, classifier) ?: nativeJar(module, version, classifier, log, cancelled)
+                    command += "--extra-jar=$jar"
+                }
+            }
+            runBuildCommand(command, sourceRoot, env, log, cancelled, onProcess, "Blockbox compilation failed. See the errors above.")
+
+            // With --server=false, scalac only reads mixed .java sources for type
+            // information. Compile them against the finished Scala/dependency
+            // assembly too, so classes such as HardwareRayLoop reach runtime.
+            val mixedJava = gameBuildInputs(sourceRoot).filter { it.extension == "java" && it.startsWith(sourceRoot.resolve("src/main/scala")) }
+            if (mixedJava.isNotEmpty()) {
+                log("Compiling ${mixedJava.size} mixed Java game sources…")
+                val classes = output.parent.resolve("mixed-classes").createDirectories()
+                val args = output.parent.resolve("mixed-sources.args")
+                args.writeText(mixedJava.joinToString("\n") { quoteJavacPath(it) })
+                val compiler = javaHome.resolve("bin/" + if (platform == HostPlatform.WINDOWS) "javac.exe" else "javac")
+                runBuildCommand(listOf(compiler.toString(), "--release", "21", "-encoding", "UTF-8", "-classpath", output.toString(), "-d", classes.toString(), "@$args"),
+                    sourceRoot, env, log, cancelled, onProcess, "Mixed Java game sources failed to compile. See the errors above.")
+                val merged = output.resolveSibling("merged.jar")
+                JarFile(output.toFile()).use { original -> JarOutputStream(merged.outputStream()).use { jar ->
+                    val replacements = Files.walk(classes).use { paths -> paths.filter { it.isRegularFile() }.toList() }
+                        .associateBy { classes.relativize(it).toString().replace('\\', '/') }
+                    original.entries().asSequence().filter { it.name !in replacements }.forEach { entry ->
+                        jar.putNextEntry(JarEntry(entry.name)); original.getInputStream(entry).use { it.copyTo(jar) }; jar.closeEntry()
+                    }
+                    replacements.forEach { (name, file) -> jar.putNextEntry(JarEntry(name)); Files.copy(file, jar); jar.closeEntry() }
+                } }
+                Files.move(merged, output, StandardCopyOption.REPLACE_EXISTING)
+            }
+        }
+    }
+
     fun nativeJar(module: String, version: String, classifier: String, log: (String) -> Unit, cancelled: () -> Boolean): Path {
         val dir = cache.resolve("lwjgl/$version/$classifier").createDirectories()
         val fileName = "$module-$version-$classifier.jar"
@@ -58,20 +116,10 @@ class GameBuildCache(private val cache: Path) {
         try {
             val classes = stage.resolve("classes").createDirectories()
             val args = stage.resolve("sources.args")
-            args.writeText(sources.joinToString("\n") { "\"" + it.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\"" })
+            args.writeText(sources.joinToString("\n") { quoteJavacPath(it) })
             val compiler = javaHome.resolve("bin/" + if (HostPlatform.detect() == HostPlatform.WINDOWS) "javac.exe" else "javac")
-            val process = ProcessBuilder(compiler.toString(), "--release", "21", "-encoding", "UTF-8", "-d", classes.toString(), "@$args").apply {
-                directory(stage.toFile()); redirectErrorStream(true); environment().clear(); environment().putAll(env)
-            }.start()
-            try {
-                onProcess(process)
-                if (cancelled()) process.destroy()
-                process.inputStream.bufferedReader().useLines { lines -> lines.forEach(log) }
-                require(process.waitFor() == 0) { if (cancelled()) "Launch cancelled." else "Java game helpers failed to compile. See the errors above." }
-            } finally {
-                if (process.isAlive) process.destroyForcibly()
-                onProcess(null)
-            }
+            runBuildCommand(listOf(compiler.toString(), "--release", "21", "-encoding", "UTF-8", "-d", classes.toString(), "@$args"),
+                stage, env, log, cancelled, onProcess, "Java game helpers failed to compile. See the errors above.")
             val output = stage.resolve("helpers.jar")
             JarOutputStream(output.outputStream()).use { jar -> Files.walk(classes).use { stream -> stream.filter { it.isRegularFile() }.forEach { file ->
                 jar.putNextEntry(JarEntry(classes.relativize(file).toString().replace('\\', '/'))); Files.copy(file, jar); jar.closeEntry()
@@ -79,9 +127,27 @@ class GameBuildCache(private val cache: Path) {
             Files.move(output, target, StandardCopyOption.REPLACE_EXISTING)
             return target
         } finally {
-            Files.walk(stage).use { stream -> stream.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) } }
+            deleteBuildDirectory(stage)
         }
     }
 
     private fun validJar(path: Path): Boolean = path.isRegularFile() && runCatching { JarFile(path.toFile()).use { it.size() > 0 } }.getOrDefault(false)
+}
+
+private fun quoteJavacPath(path: Path) = "\"" + path.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+private fun runBuildCommand(command: List<String>, directory: Path, env: Map<String, String>, log: (String) -> Unit, cancelled: () -> Boolean, onProcess: (Process?) -> Unit, failure: String) {
+    check(!cancelled()) { "Launch cancelled." }
+    val process = ProcessBuilder(command).apply {
+        directory(directory.toFile()); redirectErrorStream(true); environment().clear(); environment().putAll(env)
+    }.start()
+    try {
+        onProcess(process)
+        if (cancelled()) process.destroy()
+        process.inputStream.bufferedReader().useLines { lines -> lines.forEach(log) }
+        require(process.waitFor() == 0) { if (cancelled()) "Launch cancelled." else failure }
+    } finally {
+        if (process.isAlive) process.destroyForcibly()
+        onProcess(null)
+    }
 }

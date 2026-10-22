@@ -1,6 +1,5 @@
 package blockbox.launcher
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -15,12 +14,15 @@ class LaunchPlanner @JvmOverloads constructor(
     private val platform: HostPlatform = HostPlatform.detect(),
     private val arch: String = System.getProperty("os.arch"),
     private val inheritedEnv: Map<String, String> = System.getenv(),
-    private val resolveNative: ((String, String, String) -> Path)? = null
+    private val resolveNative: ((String, String, String) -> Path)? = null,
+    private val resolveGameJar: ((Path, Map<String, String>) -> Path)? = null
 ) {
     @JvmOverloads fun prepare(config: InstanceConfig, log: (String) -> Unit = {}, cancelled: () -> Boolean = { false }, onProcess: (Process?) -> Unit = {}): LaunchPlan {
         config.validate()
         val main = store.projectRoot.resolve("src/main/scala/blockbox/Main.scala")
-        require(main.isRegularFile()) { "Blockbox source not found. Use Launcher → Game location to choose your Blockbox checkout." }
+        val included = BundledGame.read(store.projectRoot)
+        require(included != null || main.isRegularFile()) { "Blockbox was not found. Reinstall the full application, or choose a game checkout under Launcher → Game location." }
+        if (included != null) require(included.platform == platform && included.arch == cpuArchitecture(arch)) { "This game download is for ${included.platform}/${included.arch}. Download the build for $platform/${cpuArchitecture(arch)}." }
         val env = inheritedEnv.toMutableMap()
         // Preserve PATH and its platform separator. Add common GUI-session omissions.
         val pathKey = env.keys.firstOrNull { it.equals("PATH", platform == HostPlatform.WINDOWS) } ?: "PATH"
@@ -36,58 +38,44 @@ class LaunchPlanner @JvmOverloads constructor(
             if (existing != null && existing != key) env.remove(existing)
             env[key] = value
         }
-        val javaHome = gameJavaHome(config, env, platform)
+        val javaHome = gameJavaHome(config, env, platform, requireCompiler = included == null)
             ?: error("A JDK is required to build Blockbox. Install JDK 21+ or select its java executable in Settings.")
         env["JAVA_HOME"] = javaHome.toString()
         val effectivePathKey = env.keys.firstOrNull { it.equals("PATH", platform == HostPlatform.WINDOWS) } ?: "PATH"
         env[effectivePathKey] = javaHome.resolve("bin").toString() + platform.pathSeparator + env[effectivePathKey].orEmpty()
-        env["BLOCKBOX_PROJECT_ROOT"] = store.projectRoot.toString()
+        val runtimeRoot = included?.prepareRuntime(store, config, log, cancelled) ?: store.projectRoot
+        env["BLOCKBOX_PROJECT_ROOT"] = runtimeRoot.toString()
         env["BLOCKBOX_INSTANCE"] = config.name
 
-        val scala = findExecutable(env["BLOCKBOX_SCALA_CLI"] ?: "scala-cli", env, platform)
-            ?: error("Scala CLI was not found. Install scala-cli or set BLOCKBOX_SCALA_CLI to its executable.")
+        val customNatives = env["BLOCKBOX_LWJGL_NATIVE_DIR"]?.takeIf { it.isNotBlank() }
+        if (customNatives != null) require(Path.of(customNatives).isDirectory()) { "BLOCKBOX_LWJGL_NATIVE_DIR must point to a folder of native LWJGL libraries." }
         val buildCache = GameBuildCache(store.launcherRoot.resolve("cache"))
-        val command = mutableListOf(scala.toString(), "--power", "run", store.projectRoot.resolve("src/main/scala").toString(), "--workspace", store.instanceDir(config).resolve(".build").toString(), "--server=false", "--java-home", javaHome.toString())
-        buildCache.javaHelpers(store.projectRoot, javaHome, env, log, cancelled, onProcess)?.let { command += "--extra-jar=$it" }
+        val gameJar = included?.jar ?: resolveGameJar?.invoke(javaHome, env)
+            ?: buildCache.gameJar(store.projectRoot, javaHome, platform, arch, env, log, cancelled, onProcess, resolveNative)
+        if (included != null) log("Using included Blockbox ${included.revision} (no build tools needed).")
+        val command = mutableListOf(javaHome.resolve("bin/" + if (platform == HostPlatform.WINDOWS) "java.exe" else "java").toString())
         val jvmArgs = listOf("-Xms${config.minMemoryMb}M", "-Xmx${config.maxMemoryMb}M", "--enable-native-access=ALL-UNNAMED") + splitCommandLine(config.jvmArgs)
-        if (platform == HostPlatform.MACOS) command += "--java-opt=-XstartOnFirstThread"
-        jvmArgs.forEach { command += "--java-opt=$it" }
+        if (platform == HostPlatform.MACOS) command += "-XstartOnFirstThread"
+        command += jvmArgs
         // The instance directory is the working directory, so worlds and mods stay
         // per profile. Recorded footsteps and weather live in the game checkout.
-        val audioRoot = store.projectRoot.resolve("assets/audio").toAbsolutePath().normalize()
+        val audioRoot = runtimeRoot.resolve("assets/audio").toAbsolutePath().normalize()
         if (audioRoot.isDirectory() && jvmArgs.none { it.startsWith("-Dblockbox.audioRoot=") }) {
-            command += "--java-opt=-Dblockbox.audioRoot=$audioRoot"
+            command += "-Dblockbox.audioRoot=$audioRoot"
             log("Sounds: $audioRoot")
         }
 
-        val customNatives = env["BLOCKBOX_LWJGL_NATIVE_DIR"]?.takeIf { it.isNotBlank() }
         if (customNatives != null) {
-            require(Path.of(customNatives).isDirectory()) { "BLOCKBOX_LWJGL_NATIVE_DIR must point to a folder of native LWJGL libraries." }
-            command += "--java-opt=-Dorg.lwjgl.librarypath=${Path.of(customNatives).toAbsolutePath()}"
-        } else {
-            val classifier = nativeClassifier(platform, arch)
-                ?: error("No bundled LWJGL natives for $platform/$arch. Set BLOCKBOX_LWJGL_NATIVE_DIR to libraries built for this system.")
-            val dependencies = Regex("org\\.lwjgl:(lwjgl(?:-[a-z0-9-]+)?):([0-9][A-Za-z0-9.+_-]*)").findAll(main.readText())
-                .map { it.groupValues[1] to it.groupValues[2] }.distinct().toList()
-            require(dependencies.isNotEmpty()) { "No LWJGL dependency versions were found in Main.scala." }
-            dependencies.forEach { (module, version) ->
-                val jar = resolveNative?.invoke(module, version, classifier) ?: buildCache.nativeJar(module, version, classifier, log, cancelled)
-                // Classifier dependencies can replace the unclassified module
-                // in Scala CLI. Extra JARs retain both the API and native code.
-                command += "--extra-jar=$jar"
-            }
+            command += "-Dorg.lwjgl.librarypath=${Path.of(customNatives).toAbsolutePath()}"
         }
-        if (platform.unixDesktop && config.displayBackend in listOf("x11", "x11-nvidia")) command += "--java-opt=-Dorg.lwjgl.opengl.contextAPI=native"
-        if (platform.unixDesktop && config.displayBackend == "wayland") command += "--java-opt=-Dorg.lwjgl.opengl.contextAPI=EGL"
+        if (platform.unixDesktop && config.displayBackend in listOf("x11", "x11-nvidia")) command += "-Dorg.lwjgl.opengl.contextAPI=native"
+        if (platform.unixDesktop && config.displayBackend == "wayland") command += "-Dorg.lwjgl.opengl.contextAPI=EGL"
+        command += listOf("-jar", gameJar.toString())
         val args = splitCommandLine(config.gameArgs)
-        if (args.isNotEmpty()) { command += "--"; command += args }
+        command += args
         if (platform == HostPlatform.LINUX && config.useGameMode) {
             val gameMode = findExecutable("gamemoderun", env, platform) ?: error("GameMode is enabled but gamemoderun is not installed. Disable GameMode in Settings.")
             command.add(0, gameMode.toString())
-        }
-        // Refuse batch shims instead of evaluating arbitrary arguments in cmd.
-        if (platform == HostPlatform.WINDOWS && scala.extension.lowercase() in listOf("cmd", "bat")) {
-            error("Select the native scala-cli.exe using BLOCKBOX_SCALA_CLI. Batch shims cannot safely forward all JVM and game arguments.")
         }
         return LaunchPlan(command, store.instanceDir(config).createDirectories(), env)
     }
@@ -174,7 +162,7 @@ class GameRunner(private val store: LauncherStore, private val prepare: ((Instan
                 if (current.process?.isAlive == true) terminate(current.process!!)
                 synchronized(lock) { if (session === current) { session = null; state = RunState.IDLE } }
                 onState(RunState.IDLE)
-                onExit(exitCode)
+                onExit(if (current.cancelled) 0 else exitCode)
             }
         }
         return true

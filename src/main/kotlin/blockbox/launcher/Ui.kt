@@ -125,6 +125,9 @@ class LauncherWindow(private val store: LauncherStore = LauncherStore(), private
             add(JMenuItem("New instance…").apply { addActionListener { createInstance() } })
             add(JMenuItem("Import pack…").apply { addActionListener { importPack() } })
             addSeparator()
+            includedGameRoot()?.let { included -> add(JMenuItem("Use included game").apply { addActionListener {
+                if (!busy && runner.state == RunState.IDLE) task("Selecting included game", { store.setGameRoot(included) }) { refreshDiagnostics(); rebuildOverview(); setStatus("Included game selected") }
+            } }) }
             add(JMenuItem("Game location…").apply { addActionListener { chooseGameRoot() } })
             add(JMenuItem("Open launcher data").apply { addActionListener { open(store.launcherRoot) } })
             addSeparator(); add(JMenuItem("Exit").apply { addActionListener { requestClose() } })
@@ -335,12 +338,13 @@ class LauncherWindow(private val store: LauncherStore = LauncherStore(), private
                 appendLine("UI         Swing / Java2D · GPU pipelines disabled by default")
                 appendLine("Native     ${nativeClassifier(HostPlatform.detect(), System.getProperty("os.arch")) ?: "requires local LWJGL libraries"}")
                 appendLine("\nGame folder\n${store.projectRoot}")
-                appendLine(if (store.projectRoot.resolve("src/main/scala/blockbox/Main.scala").isRegularFile()) "Source found." else "Source missing. Choose Game location above.")
+                val bundled = runCatching { BundledGame.read(store.projectRoot) }.getOrNull()
+                appendLine(if (bundled != null) "Included game ready (${bundled.revision})." else if (store.projectRoot.resolve("src/main/scala/blockbox/Main.scala").isRegularFile()) "Source found." else "Game missing. Reinstall the full app or choose Game location above.")
                 appendLine("\nLauncher data\n${store.launcherRoot}")
                 val env = System.getenv()
-                appendLine("\nScala CLI  ${findExecutable(env["BLOCKBOX_SCALA_CLI"] ?: "scala-cli") ?: "Not found on PATH; install Scala CLI or set BLOCKBOX_SCALA_CLI."}")
+                if (bundled == null) appendLine("\nScala CLI  ${findExecutable(env["BLOCKBOX_SCALA_CLI"] ?: "scala-cli") ?: "Not found on PATH; needed only to build source checkouts."}")
                 config?.let {
-                    appendLine("Game JDK   ${runCatching { gameJavaHome(it, env, HostPlatform.detect()) }.getOrNull() ?: "Not found; select a JDK in Settings."}")
+                    appendLine("Game Java  ${runCatching { gameJavaHome(it, env, HostPlatform.detect(), requireCompiler = bundled == null) }.getOrNull() ?: "Not found; select Java in Settings."}")
                     appendLine("\nInstance\n${store.instanceDir(it)}")
                     appendLine("Graphics   ${it.displayBackend}")
                 }
@@ -502,7 +506,7 @@ class LauncherWindow(private val store: LauncherStore = LauncherStore(), private
             title("Profile")
             field("Name", name); field("Description", description)
             title("Java & memory")
-            field("Java executable", JPanel(BorderLayout(6, 0)).apply { isOpaque = false; add(java); add(button("Browse…") { choosePath(this@LauncherWindow, "Choose Java executable")?.let { java.text = it.toString() } }, BorderLayout.EAST) }, "Use java for automatic JDK selection, or choose a JDK 21+ executable.")
+            field("Java executable", JPanel(BorderLayout(6, 0)).apply { isOpaque = false; add(java); add(button("Browse…") { choosePath(this@LauncherWindow, "Choose Java executable")?.let { java.text = it.toString() } }, BorderLayout.EAST) }, "Use java for the included runtime, or choose a Java 21+ executable.")
             field("Memory (MiB)", JPanel(GridLayout(1, 4, 6, 0)).apply { isOpaque = false; add(label("Minimum")); add(minMemory); add(label("Maximum")); add(maxMemory) })
             field("Quick presets", JPanel(GridLayout(1, 4, 6, 0)).apply { isOpaque = false; listOf(2048, 4096, 6144, 8192).forEach { mb -> add(button("${mb / 1024} GiB") { maxMemory.text = mb.toString(); minMemory.text = "512" }) } })
             jvm.lineWrap = true; jvm.wrapStyleWord = true

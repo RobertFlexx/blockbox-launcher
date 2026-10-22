@@ -29,13 +29,23 @@ class LauncherStore(val launcherRoot: Path = defaultDataRoot(), projectRoot: Pat
         if (file.exists()) runCatching { file.bufferedReader().use { preferences.load(it) } }
             .onFailure { warnings += "Could not read launcher preferences: ${it.message}" }
         // An explicit environment override always wins over a saved location.
-        if (System.getenv("BLOCKBOX_GAME_ROOT").isNullOrBlank()) preferences.getProperty("gameRoot")?.let { this.projectRoot = Path.of(it).toAbsolutePath().normalize() }
+        if (System.getenv("BLOCKBOX_GAME_ROOT").isNullOrBlank()) {
+            if (preferences.getProperty("gameSource") == "included") includedGameRoot()?.let { this.projectRoot = it }
+            else preferences.getProperty("gameRoot")?.let { this.projectRoot = Path.of(it).toAbsolutePath().normalize() }
+        }
     }
 
     @Synchronized fun setGameRoot(path: Path) {
         val root = path.toAbsolutePath().normalize()
-        require(root.resolve("src/main/scala/blockbox/Main.scala").isRegularFile()) { "Choose the Blockbox folder containing src/main/scala/blockbox/Main.scala." }
-        preferences.setProperty("gameRoot", root.toString())
+        require(root.resolve("src/main/scala/blockbox/Main.scala").isRegularFile() || BundledGame.read(root) != null) { "Choose a Blockbox game folder or source checkout." }
+        if (root == includedGameRoot()?.toAbsolutePath()?.normalize()) {
+            // AppImage mount paths change each run; remember the choice, not its temporary path.
+            preferences.setProperty("gameSource", "included")
+            preferences.remove("gameRoot")
+        } else {
+            preferences.remove("gameSource")
+            preferences.setProperty("gameRoot", root.toString())
+        }
         savePreferences()
         projectRoot = root
     }

@@ -1,36 +1,116 @@
-name: Build launcher
+name: Build Blockbox installers
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   desktop:
+    name: ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-2022
+            target: windows-x64
+          - os: macos-15
+            target: macos-arm64
+          - os: macos-15-intel
+            target: macos-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Read release configuration
+        id: config
+        shell: bash
+        run: python scripts/release-config.py
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.config.outputs.game_repository }}
+          ref: ${{ steps.config.outputs.game_revision }}
+          path: game-source
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Test and package
+      - name: Set up build-only tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: ./gradlew --no-daemon check standaloneJar installDist packageApp
-      - name: Portable launcher
-        uses: actions/upload-artifact@v4
-        with:
-          name: launcher-portable-${{ runner.os }}-${{ runner.arch }}
-          path: build/standalone/blockbox-launcher.jar
-      - name: Bundle application
+        run: python scripts/setup-ci-tools.py
+      - name: Linux packaging tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm squashfs-tools desktop-file-utils
+      - name: Test and create full installer
+        env:
+          GAME_REVISION: ${{ steps.config.outputs.game_revision }}
         shell: bash
-        run: tar -czf "blockbox-launcher-${{ runner.os }}-${{ runner.arch }}.tar.gz" -C build/native .
+        run: ./gradlew --no-daemon check packageInstaller -PgameRoot=game-source "-PgameRevision=$GAME_REVISION"
+      - name: Additional Linux formats
+        if: runner.os == 'Linux'
+        env:
+          GAME_REVISION: ${{ steps.config.outputs.game_revision }}
+        shell: bash
+        run: |
+          ./gradlew --no-daemon packageInstaller -PinstallerType=rpm -PgameRoot=game-source "-PgameRevision=$GAME_REVISION"
+          ./scripts/package-appimage.sh
+      - name: Verify included game without development tools
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) runtime='build/native/Blockbox Launcher/runtime/bin/java.exe'; app='build/native/Blockbox Launcher/app' ;;
+            macOS) runtime='build/native/Blockbox Launcher.app/Contents/runtime/Contents/Home/bin/java'; app='build/native/Blockbox Launcher.app/Contents/app' ;;
+            Linux) runtime='build/native/Blockbox Launcher/lib/runtime/bin/java'; app='build/native/Blockbox Launcher/lib/app' ;;
+          esac
+          JAVA_HOME=/no-system-java BLOCKBOX_SCALA_CLI=/no-scala-cli "$runtime" -jar "$app/blockbox-launcher.jar" --check-game
+      - name: Give downloads simple names
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          for file in Path('build/installers').iterdir():
+              if file.suffix.lower() in ('.exe', '.msi', '.dmg', '.pkg', '.deb', '.rpm'):
+                  suffix = '-setup' if file.suffix.lower() in ('.exe', '.msi') else ''
+                  file.rename(file.with_name(f"blockbox-{os.environ['RELEASE_TARGET']}{suffix}{file.suffix}"))
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: launcher-app-${{ runner.os }}-${{ runner.arch }}
-          path: blockbox-launcher-*.tar.gz
+          name: blockbox-${{ matrix.target }}
+          path: build/installers/*
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: desktop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: blockbox-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create checksums
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          root = Path('release-assets')
+          files = sorted(file for file in root.iterdir() if file.is_file())
+          (root / 'SHA256SUMS.txt').write_text(''.join(f'{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.name}\n' for file in files))
+          PY
+      - name: Publish downloads for this version tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "Blockbox $GITHUB_REF_NAME" --notes-file docs/release-notes.md release-assets/*

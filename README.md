@@ -1,49 +1,38 @@
 # Blockbox Launcher
 
-Desktop launcher for [Blockbox](https://github.com/RobertFlexx/blockbox). Swing, nothing fancy. It keeps instances, worlds, and mods separate, then starts the game.
-
-## Run
-
-If you already installed it, just open Blockbox Launcher.
-
-From source, with JDK 21:
-
-```sh
-./scripts/run.sh
-```
-
-First run builds it. Later runs start the jar. After you change the source:
-
-```sh
-./scripts/run.sh --rebuild
-```
-
-Windows: `.\scripts\run-windows.ps1` (add `-Rebuild` after edits). macOS and BSD have `scripts/run-macos.sh` and `scripts/run-bsd.sh`. `BLOCKBOX_LAUNCHER_JAVA_HOME` picks the JDK if you have more than one.
+Classic desktop launcher for [Blockbox](https://github.com/RobertFlexx/blockbox). It keeps instances, worlds, and mods separate, then starts the game.
 
 ## Install
 
-These copy the app into your user folder. No admin needed.
+Get the download for your computer from [Releases](https://github.com/RobertFlexx/blockbox-launcher/releases). Full installers include **the launcher, game, assets, sounds, and Java**. No checkout, Gradle, Scala CLI, or Java installation needed.
 
-| System | Command | Where it goes |
+| Computer | Download | Install |
 | --- | --- | --- |
-| Linux | `./scripts/install-linux.sh` | `~/.local/bin/blockbox-launcher` |
-| macOS | `./scripts/install-macos.sh` | `~/Applications/Blockbox Launcher.app` |
-| Windows | `.\scripts\install-windows.ps1` | `%LOCALAPPDATA%\Programs\Blockbox Launcher` |
-| BSD | `./scripts/install-bsd.sh` | `~/.local/bin/blockbox-launcher` |
+| Windows 64-bit | `blockbox-windows-x64-setup.exe` | Open the installer, then use the Start Menu. |
+| Mac, Apple Silicon | `blockbox-macos-arm64.dmg` | Open it and drag the app to Applications. |
+| Mac, Intel | `blockbox-macos-x64.dmg` | Open it and drag the app to Applications. |
+| Linux | `blockbox-linux-x64.AppImage` | Allow execution in Properties, then open it. |
+| Debian / Ubuntu | `blockbox-linux-x64.deb` | Open with your software installer. |
+| Fedora / openSUSE | `blockbox-linux-x64.rpm` | Open with your software installer. |
 
-Linux can also do `./scripts/install-linux.sh --portable` if you don't want a bundled runtime. Pass `--prefix` or `-InstallDir` to put it somewhere else. `--rebuild` builds a fresh app first.
+Open Blockbox Launcher and press **Launch game**. The game is already compiled. Your instances and worlds live in your user account, separately from the application, and survive application updates.
 
-Don't delete the source checkout if your instances still live in it. The launcher won't move your worlds for you.
+Installers are currently unsigned, so Windows/macOS may ask for approval. If Linux cannot mount an AppImage, start it with `--appimage-extract-and-run` to run without FUSE.
 
-## Game
+## From source
 
-It looks for a `blockbox` folder next to this repo, or `~/blockbox`. **Launcher → Game location…** if it's somewhere else. `BLOCKBOX_GAME_ROOT` overrides that.
+Building requires **JDK 21** and **Scala CLI**. Keep a game checkout at `../blockbox`, or choose **Launcher → Game location…**. `BLOCKBOX_GAME_ROOT` overrides the game location; `BLOCKBOX_JAVA_HOME` / `BLOCKBOX_SCALA_CLI` select game build tools. On Windows, use the native `scala-cli.exe`.
 
-The game itself needs **Scala CLI** and a **JDK 21+**. Pick the Java path in an instance's settings, or set `BLOCKBOX_JAVA_HOME` / `BLOCKBOX_SCALA_CLI`. On Windows, point that at `scala-cli.exe`, not the `.bat`.
+```sh
+./scripts/run.sh
+./scripts/run.sh --rebuild  # after editing the launcher
+```
 
-Each instance is its own folder: `mods/`, `worlds/`, `config/`, `logs/`. The game runs from there. Sound effects still come from the game checkout's `assets/audio`. If you really want a different folder, set `-Dblockbox.audioRoot=...` in that instance's JVM arguments.
+First run builds the launcher; later runs start its jar without Gradle. Windows: `.\scripts\run-windows.ps1` (`-Rebuild` after edits). macOS/BSD: `scripts/run-macos.sh` / `scripts/run-bsd.sh`. `BLOCKBOX_LAUNCHER_JAVA_HOME` selects the launcher's JDK.
 
-Graphics settings for the game are under **Settings**. On Linux, Automatic is fine. Software (Mesa) works but it's slow. If launch fails, the Console has the error.
+The first source-game launch builds a runnable jar in `cache/game/`. Instances share it; later launches skip Scala CLI and compilation. Source, dependencies, bundled resources, JDK, or platform changes rebuild it. Memory, graphics, mods, and game arguments don't.
+
+`scripts/install-linux.sh`, `scripts/install-macos.sh`, and `scripts/install-windows.ps1` build/copy a full app into your user folder. Linux supports `--prefix DIRECTORY`; Windows supports `-InstallDir DIRECTORY`. Add `--rebuild` / `-Rebuild` for a fresh build. BSD uses `scripts/install-bsd.sh` with its own JDK and compatible native libraries. Don't delete an old checkout while your instances still live in it; worlds aren't moved automatically.
 
 ## Shortcuts
 
@@ -59,5 +48,10 @@ Ctrl on Windows/Linux/BSD, Command on macOS.
 ```sh
 ./gradlew check
 ./gradlew standaloneJar
-./gradlew packageApp
+./gradlew packageApp -PgameRoot=../blockbox
+./gradlew packageInstaller -PgameRoot=../blockbox
 ```
+
+`packageApp` includes the compiled game, runtime assets, and private Java runtime. `packageInstaller` makes an EXE, DMG, or DEB on its host OS (`-PinstallerType=rpm` for RPM). Linux AppImage: `APPIMAGETOOL=/path/to/appimagetool scripts/package-appimage.sh` after `packageApp`.
+
+[The build workflow](.github/workflows/build.yml) builds and tests Windows, Linux, and both Mac architectures. Set the exact game commit in `game-release.properties`. A version tag matching `build.gradle.kts` (currently `v1.2.0`) publishes all installers with checksums. Ordinary builds attach them as workflow artifacts.

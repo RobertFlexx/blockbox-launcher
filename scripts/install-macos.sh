@@ -7,7 +7,7 @@ LAUNCHER_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 launcher_rebuild=0
 if [ "${1:-}" = --rebuild ]; then launcher_rebuild=1; shift; fi
 [ "$#" -eq 0 ] || { printf '%s\n' 'Usage: install-macos.sh [--rebuild]' >&2; exit 1; }
-if [ "$launcher_rebuild" -eq 1 ] || [ ! -x "$LAUNCHER_ROOT/build/native/Blockbox Launcher.app/Contents/MacOS/Blockbox Launcher" ]; then launcher_build packageApp; fi
+if [ "$launcher_rebuild" -eq 1 ] || [ ! -x "$LAUNCHER_ROOT/build/native/Blockbox Launcher.app/Contents/MacOS/Blockbox Launcher" ] || [ ! -f "$LAUNCHER_ROOT/build/native/Blockbox Launcher.app/Contents/app/game/blockbox-game.properties" ]; then launcher_build packageApp; fi
 APP_DIR=${BLOCKBOX_APPLICATIONS_DIR:-$HOME/Applications}
 mkdir -p "$APP_DIR"
 launcher_stage=$(mktemp -d "$APP_DIR/.blockbox-install.XXXXXX")
@@ -20,4 +20,4 @@ if ! mv "$launcher_stage/Blockbox Launcher.app" "$APP_DIR/Blockbox Launcher.app"
   exit 1
 fi
 if [ -d "$APP_DIR/Blockbox Launcher.app.previous" ]; then rm -rf -- "$APP_DIR/Blockbox Launcher.app.previous"; fi
-printf 'Installed: %s/Blockbox Launcher.app\nOpen the app from Finder. Java and Gradle are not needed at startup.\n' "$APP_DIR"
+printf 'Installed: %s/Blockbox Launcher.app\nBlockbox and Java are included. Open the app from Finder; no developer tools are needed.\n' "$APP_DIR"

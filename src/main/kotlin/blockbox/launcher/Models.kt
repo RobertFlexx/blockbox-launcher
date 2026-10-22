@@ -4,7 +4,7 @@ import java.nio.file.Path
 import java.util.UUID
 
 const val PACK_EXTENSION = "bbpack"
-const val LAUNCHER_VERSION = "1.1.0"
+const val LAUNCHER_VERSION = "1.2.0"
 val DISPLAY_BACKENDS = listOf("auto", "x11", "wayland", "x11-nvidia", "software")
 
 data class InstanceConfig(

@@ -122,7 +122,7 @@ class LauncherTest {
         assertEquals(1, countFiles(store.instancesRoot))
     }
 
-    @Test fun `launch plans keep instance cwd and use matching native classifiers`() {
+    @Test fun `cached game launches directly with Java and keeps instance cwd`() {
         val store = store()
         store.projectRoot.resolve("src/main/scala/blockbox").createDirectories().resolve("Main.scala").writeText("//> using dep \"org.lwjgl:lwjgl:3.4.1\"\n//> using dep \"org.lwjgl:lwjgl-glfw:3.4.1\"")
         val bin = temp.resolve("fake JDK/bin").createDirectories()
@@ -130,16 +130,17 @@ class LauncherTest {
         val scala = temp.resolve("scala-cli.exe").apply { writeText(""); toFile().setExecutable(true) }
         val env = mapOf("JAVA_HOME" to bin.parent.toString(), "BLOCKBOX_SCALA_CLI" to scala.toString(), "Path" to "C:\\Java;C:\\Tools")
         val config = store.createInstance("Profile with spaces", "").copy(gameArgs = "\"two words\" \"\"", displayBackend = "x11-nvidia")
-        val nativeJar = { module: String, version: String, classifier: String -> temp.resolve("$module-$version-$classifier.jar") }
-        val windows = LaunchPlanner(store, HostPlatform.WINDOWS, "arm64", env, nativeJar).prepare(config)
+        val gameJar = temp.resolve("compiled game.jar")
+        val windows = LaunchPlanner(store, HostPlatform.WINDOWS, "arm64", env, resolveGameJar = { _, _ -> gameJar }).prepare(config)
         assertEquals(store.instanceDir(config), windows.directory)
-        assertTrue(windows.command.any { it.startsWith("--extra-jar=") && "natives-windows-arm64.jar" in it })
+        assertEquals(bin.resolve("java.exe").toString(), windows.command.first())
+        assertTrue(windows.command.windowed(2).any { it == listOf("-jar", gameJar.toString()) })
+        assertFalse(windows.command.any { "scala-cli" in it || it == "--power" })
         assertTrue(windows.environment["Path"]!!.endsWith("C:\\Java;C:\\Tools"))
         assertNull(windows.environment["GLFW_PLATFORM"])
         assertEquals(listOf("two words", ""), windows.command.takeLast(2))
-        val mac = LaunchPlanner(store, HostPlatform.MACOS, "aarch64", env, nativeJar).prepare(config)
-        assertTrue("--java-opt=-XstartOnFirstThread" in mac.command)
-        assertTrue(mac.command.any { it.startsWith("--extra-jar=") && "natives-macos-arm64.jar" in it })
+        val mac = LaunchPlanner(store, HostPlatform.MACOS, "aarch64", env, resolveGameJar = { _, _ -> gameJar }).prepare(config)
+        assertTrue("-XstartOnFirstThread" in mac.command)
     }
 
     @Test fun `launch uses the game checkout for recorded sound effects`() {
@@ -152,9 +153,9 @@ class LauncherTest {
         val scala = temp.resolve("scala-cli").apply { writeText(""); toFile().setExecutable(true) }
         val env = mapOf("JAVA_HOME" to bin.parent.toString(), "BLOCKBOX_SCALA_CLI" to scala.toString(), "PATH" to bin.toString())
         val config = store.createInstance("Sounds", "")
-        val plan = LaunchPlanner(store, HostPlatform.LINUX, "amd64", env) { _, _, _ -> temp.resolve("natives.jar") }.prepare(config)
+        val plan = LaunchPlanner(store, HostPlatform.LINUX, "amd64", env, resolveGameJar = { _, _ -> temp.resolve("game.jar") }).prepare(config)
         assertEquals(store.instanceDir(config), plan.directory)
-        assertTrue(plan.command.any { it == "--java-opt=-Dblockbox.audioRoot=${sounds.parent.toAbsolutePath().normalize()}" })
+        assertTrue(plan.command.any { it == "-Dblockbox.audioRoot=${sounds.parent.toAbsolutePath().normalize()}" })
     }
 
     @Test fun `process failure resets launch state and permits retry`() {

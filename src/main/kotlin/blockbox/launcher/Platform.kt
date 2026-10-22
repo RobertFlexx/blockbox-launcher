@@ -46,20 +46,22 @@ fun defaultDataRoot(): Path {
 
 fun resolveGameRoot(launcherRoot: Path): Path {
     System.getenv("BLOCKBOX_GAME_ROOT")?.takeIf { it.isNotBlank() }?.let { return Path.of(it).toAbsolutePath().normalize() }
+    includedGameRoot()?.let { return it }
     val home = Path.of(System.getProperty("user.home"))
     return listOfNotNull(launcherRoot.parent, launcherRoot.parent?.resolve("blockbox"), Path.of(System.getProperty("user.dir")), home.resolve("blockbox"))
         .firstOrNull { it.resolve("src/main/scala/blockbox/Main.scala").exists() } ?: home.resolve("blockbox")
 }
 
-fun gameJavaHome(config: InstanceConfig, env: Map<String, String>, platform: HostPlatform): Path? {
+fun gameJavaHome(config: InstanceConfig, env: Map<String, String>, platform: HostPlatform, requireCompiler: Boolean = true): Path? {
     val executableName = if (platform == HostPlatform.WINDOWS) "java.exe" else "java"
     val compilerName = if (platform == HostPlatform.WINDOWS) "javac.exe" else "javac"
     if (config.javaPath.trim() != "java") {
         val executable = findExecutable(config.javaPath, env, platform) ?: error("Java executable not found: ${config.javaPath}")
-        return executable.toRealPath().parent?.parent?.also { require(it.resolve("bin/$compilerName").exists()) { "Choose a JDK with javac, rather than a JRE." } }
+        return executable.toRealPath().parent?.parent?.also { require(!requireCompiler || it.resolve("bin/$compilerName").exists()) { "Choose a JDK with javac, rather than a JRE." } }
     }
-    env["BLOCKBOX_JAVA_HOME"]?.takeIf { it.isNotBlank() }?.let { return Path.of(it).also { path -> require(path.resolve("bin/$compilerName").exists()) { "BLOCKBOX_JAVA_HOME must point to a JDK." } } }
+    env["BLOCKBOX_JAVA_HOME"]?.takeIf { it.isNotBlank() }?.let { return Path.of(it).also { path -> require(path.resolve("bin/$executableName").exists() && (!requireCompiler || path.resolve("bin/$compilerName").exists())) { "BLOCKBOX_JAVA_HOME must point to a ${if (requireCompiler) "JDK" else "Java runtime"}." } } }
     val candidates = mutableListOf<Path>()
+    if (!requireCompiler) candidates.add(Path.of(System.getProperty("java.home")))
     env["JAVA_HOME"]?.let { candidates.add(Path.of(it)) }
     findExecutable(executableName, env, platform)?.let { candidates.add(it.toRealPath().parent.parent) }
     candidates.add(Path.of(System.getProperty("java.home")))
@@ -71,7 +73,7 @@ fun gameJavaHome(config: InstanceConfig, env: Map<String, String>, platform: Hos
             }
         }
     }
-    return candidates.firstOrNull { it.resolve("bin/$executableName").exists() && it.resolve("bin/$compilerName").exists() }
+    return candidates.firstOrNull { it.resolve("bin/$executableName").exists() && (!requireCompiler || it.resolve("bin/$compilerName").exists()) }
 }
 
 fun nativeClassifier(platform: HostPlatform, arch: String): String? = when (platform) {

@@ -24,7 +24,7 @@ mkdir -p "$BIN_DIR" "$DESKTOP_DIR" "$INSTALL_PREFIX/share"
 
 if [ "$launcher_portable" -eq 0 ]; then
   launcher_source=$LAUNCHER_ROOT/build/native/Blockbox\ Launcher
-  if [ "$launcher_rebuild" -eq 1 ] || [ ! -x "$launcher_source/lib/runtime/bin/java" ] || [ ! -f "$launcher_source/lib/app/blockbox-launcher.jar" ]; then launcher_build packageApp; fi
+  if [ "$launcher_rebuild" -eq 1 ] || [ ! -x "$launcher_source/lib/runtime/bin/java" ] || [ ! -f "$launcher_source/lib/app/blockbox-launcher.jar" ] || [ ! -f "$launcher_source/lib/app/game/blockbox-game.properties" ]; then launcher_build packageApp; fi
   launcher_exec=lib/runtime/bin/java
 else
   launcher_source=$LAUNCHER_ROOT/build/install/blockbox-launcher
@@ -81,3 +81,4 @@ EOF
 if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true; fi
 if [ -d "$APP_ROOT.previous" ]; then rm -rf -- "$APP_ROOT.previous"; fi
 printf 'Installed: %s\nLaunch from your application menu or run blockbox-launcher. Gradle is not used at startup.\n' "$BIN_DIR/blockbox-launcher"
+if [ "$launcher_portable" -eq 0 ]; then printf '%s\n' 'Blockbox and its Java runtime are included.'; fi

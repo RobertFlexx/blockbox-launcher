@@ -5,6 +5,8 @@ instances/
 exports/
 cache/
 launcher.properties
+/game-source/
+__pycache__/
 *.log
 *.bbpack
 .DS_Store
