@@ -40,6 +40,9 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Test macOS installer
+        if: runner.os == 'macOS'
+        run: python3 scripts/test-install-macos.py
       - name: Set up build-only tools
         env:
           GH_TOKEN: ${{ github.token }}

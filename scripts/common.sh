@@ -21,7 +21,12 @@ launcher_java() {
     JAVA_COMMAND=$(command -v java || true)
   fi
   [ -n "$JAVA_COMMAND" ] || { printf '%s\n' 'Java 21+ is required for the portable launcher. Install a JDK or use a bundled application build.' >&2; return 1; }
-  launcher_version=$("$JAVA_COMMAND" -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')
+  if ! launcher_java_output=$("$JAVA_COMMAND" -version 2>&1); then
+    printf '%s\n' "Could not start Java: $JAVA_COMMAND" "$launcher_java_output" \
+      'Install JDK 21+ and set BLOCKBOX_LAUNCHER_JAVA_HOME, or use a packaged release.' >&2
+    return 1
+  fi
+  launcher_version=$(printf '%s\n' "$launcher_java_output" | sed -n '1s/.*version "\([0-9]*\).*/\1/p')
   case "$launcher_version" in ''|*[!0-9]*) printf '%s\n' 'Could not determine Java version.' >&2; return 1;; esac
   [ "$launcher_version" -ge 21 ] || { printf '%s\n' "Java 21+ is required; found Java $launcher_version." >&2; return 1; }
 }
