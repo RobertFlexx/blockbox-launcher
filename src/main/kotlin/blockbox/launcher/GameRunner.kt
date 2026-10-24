@@ -23,6 +23,8 @@ class LaunchPlanner @JvmOverloads constructor(
         val included = BundledGame.read(store.projectRoot)
         require(included != null || main.isRegularFile()) { "Blockbox was not found. Reinstall the full application, or choose a game checkout under Launcher → Game location." }
         if (included != null) require(included.platform == platform && included.arch == cpuArchitecture(arch)) { "This game download is for ${included.platform}/${included.arch}. Download the build for $platform/${cpuArchitecture(arch)}." }
+        // A source checkout follows its own remote. Packaged games are already built and are not pulled.
+        if (included == null && main.isRegularFile()) updateGameCheckout(store.projectRoot, log, cancelled, inheritedEnv)
         val env = inheritedEnv.toMutableMap()
         // Preserve PATH and its platform separator. Add common GUI-session omissions.
         val pathKey = env.keys.firstOrNull { it.equals("PATH", platform == HostPlatform.WINDOWS) } ?: "PATH"

@@ -32,6 +32,8 @@ First run builds the launcher; later runs start its jar without Gradle. Windows:
 
 The first source-game launch builds a runnable jar in `cache/game/`. Instances share it; later launches skip Scala CLI and compilation. Source, dependencies, bundled resources, JDK, or platform changes rebuild it. Memory, graphics, mods, and game arguments don't.
 
+Launch checks the checkout's git remote first. If that remote has new commits and the checkout is clean, it fast-forwards. If you are already up to date, offline, ahead, or have local changes, it leaves the checkout alone and starts the game you have.
+
 `scripts/install-linux.sh`, `scripts/install-macos.sh`, and `scripts/install-windows.ps1` build/copy a full app into your user folder. Linux supports `--prefix DIRECTORY`; Windows supports `-InstallDir DIRECTORY`. Add `--rebuild` / `-Rebuild` for a fresh build. BSD uses `scripts/install-bsd.sh` with its own JDK and compatible native libraries. Don't delete an old checkout while your instances still live in it; worlds aren't moved automatically.
 
 ## Shortcuts
