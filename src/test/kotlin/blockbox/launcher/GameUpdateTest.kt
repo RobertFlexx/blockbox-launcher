@@ -1,8 +1,14 @@
 package blockbox.launcher
 
 import java.nio.file.Path
+import java.util.Properties
+import java.util.jar.Attributes
+import java.util.jar.JarEntry
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
+import kotlin.io.path.outputStream
 import kotlin.io.path.readText
 import kotlin.io.path.writeText
 import kotlin.test.Test
@@ -10,6 +16,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.io.TempDir
 
@@ -117,6 +124,79 @@ class GameUpdateTest {
         assertEquals("object Main\nval version = 2\n", readGame(player))
     }
 
+    @Test fun `an included snapshot launches a newer sibling checkout`() {
+        assumeTrue(findExecutable("git") != null)
+        val (publisher, player) = pairAt(temp.resolve("blockbox"))
+        val includedRevision = head(player)
+        writeGame(publisher, "object Main\nval version = 2\n")
+        commit(publisher, "version 2")
+        git(publisher, "push")
+        val bundled = includedGame(includedRevision)
+        val store = LauncherStore(temp.resolve("data"), bundled)
+        val built = temp.resolve("built-game.jar")
+        val plan = launch(store, built)
+        assertEquals("object Main\nval version = 2\n", readGame(player))
+        assertTrue(plan.command.contains(built.toString()))
+        assertEquals(player.toAbsolutePath().normalize().toString(), plan.environment["BLOCKBOX_PROJECT_ROOT"])
+        player.resolve(".git/FETCH_HEAD").toFile().delete()
+        val again = mutableListOf<String>()
+        val second = launch(store, built, again)
+        assertTrue(again.any { "up to date" in it })
+        assertTrue(again.any { "ahead of the included game" in it })
+        assertFalse(player.resolve(".git/FETCH_HEAD").exists())
+        assertTrue(second.command.contains(built.toString()))
+    }
+
+    @Test fun `an included snapshot stays when the sibling checkout is the same commit`() {
+        assumeTrue(findExecutable("git") != null)
+        val player = temp.resolve("blockbox")
+        git(temp, "init", "-b", "main", player.toString())
+        configure(player)
+        writeGame(player, "object Main\nval version = 1\n")
+        commit(player, "version 1")
+        val store = LauncherStore(temp.resolve("data"), includedGame(head(player)))
+        val plan = launch(store, null)
+        assertTrue(plan.command.windowed(2).any { it == listOf("-jar", store.projectRoot.resolve("blockbox-game.jar").toString()) })
+    }
+
+    @Test fun `an older clean checkout keeps the newer included snapshot`() {
+        assumeTrue(findExecutable("git") != null)
+        val player = temp.resolve("blockbox")
+        git(temp, "init", "-b", "main", player.toString())
+        configure(player)
+        writeGame(player, "object Main\nval version = 1\n")
+        commit(player, "version 1")
+        writeGame(player, "object Main\nval version = 2\n")
+        commit(player, "version 2")
+        val newer = head(player)
+        git(player, "reset", "--hard", "HEAD~1")
+        val store = LauncherStore(temp.resolve("data"), includedGame(newer))
+        val plan = launch(store, null)
+        assertEquals("object Main\nval version = 1\n", readGame(player))
+        assertTrue(plan.command.windowed(2).any { it == listOf("-jar", store.projectRoot.resolve("blockbox-game.jar").toString()) })
+    }
+
+    @Test fun `local changes launch the checkout even when the included snapshot is newer`() {
+        assumeTrue(findExecutable("git") != null)
+        val player = temp.resolve("blockbox")
+        git(temp, "init", "-b", "main", player.toString())
+        configure(player)
+        writeGame(player, "object Main\nval version = 1\n")
+        commit(player, "version 1")
+        writeGame(player, "object Main\nval version = 2\n")
+        commit(player, "version 2")
+        val newer = head(player)
+        git(player, "reset", "--hard", "HEAD~1")
+        writeGame(player, "object Main\nval localEdit = true\n")
+        val store = LauncherStore(temp.resolve("data"), includedGame(newer))
+        val built = temp.resolve("built-game.jar")
+        val messages = mutableListOf<String>()
+        val plan = launch(store, built, messages)
+        assertEquals("object Main\nval localEdit = true\n", readGame(player))
+        assertTrue(plan.command.contains(built.toString()))
+        assertTrue(messages.any { "local changes" in it })
+    }
+
     @Test fun `cancellation does not change the checkout`() {
         assumeTrue(findExecutable("git") != null)
         val player = checkout()
@@ -125,10 +205,11 @@ class GameUpdateTest {
         assertEquals(before, head(player))
     }
 
-    private fun pair(): Pair<Path, Path> {
+    private fun pair(): Pair<Path, Path> = pairAt(temp.resolve("player-${System.nanoTime()}"))
+
+    private fun pairAt(player: Path): Pair<Path, Path> {
         val bare = temp.resolve("remote-${System.nanoTime()}.git")
         val publisher = temp.resolve("publisher-${bare.fileName}")
-        val player = temp.resolve("player-${bare.fileName}")
         git(temp, "init", "--bare", "-b", "main", bare.toString())
         git(temp, "clone", bare.toString(), publisher.toString())
         configure(publisher)
@@ -141,6 +222,31 @@ class GameUpdateTest {
     }
 
     private fun checkout(): Path = pair().second
+
+    private fun includedGame(revision: String): Path {
+        val root = temp.resolve("included-$revision").createDirectories()
+        val manifest = Manifest().apply {
+            mainAttributes[Attributes.Name.MANIFEST_VERSION] = "1.0"
+            mainAttributes[Attributes.Name.MAIN_CLASS] = "example.Main"
+        }
+        JarOutputStream(root.resolve("blockbox-game.jar").outputStream(), manifest).use { jar ->
+            jar.putNextEntry(JarEntry("example/Main.class")); jar.write(byteArrayOf(1)); jar.closeEntry()
+        }
+        writeProperties(root.resolve(BUNDLED_GAME_DESCRIPTOR), Properties().apply {
+            setProperty("format", "Blockbox Bundled Game"); setProperty("formatVersion", "1"); setProperty("id", "a".repeat(64))
+            setProperty("revision", revision); setProperty("platform", "LINUX"); setProperty("arch", "x64")
+        })
+        return root
+    }
+
+    private fun launch(store: LauncherStore, built: Path?, log: MutableList<String> = mutableListOf()): LaunchPlan {
+        val jdk = temp.resolve("jdk-${System.nanoTime()}")
+        val bin = jdk.resolve("bin").createDirectories()
+        listOf("java", "javac").forEach { bin.resolve(it).writeText(""); bin.resolve(it).toFile().setExecutable(true) }
+        val env = mapOf("JAVA_HOME" to jdk.toString(), "PATH" to System.getenv("PATH").orEmpty())
+        return LaunchPlanner(store, HostPlatform.LINUX, "amd64", env, resolveGameJar = { _, _ -> built ?: fail("Included game must not invoke the source build") })
+            .prepare(store.createInstance("Play", ""), log::add)
+    }
 
     private fun configure(dir: Path) {
         git(dir, "config", "user.email", "test@example.com")

@@ -19,12 +19,16 @@ class LaunchPlanner @JvmOverloads constructor(
 ) {
     @JvmOverloads fun prepare(config: InstanceConfig, log: (String) -> Unit = {}, cancelled: () -> Boolean = { false }, onProcess: (Process?) -> Unit = {}): LaunchPlan {
         config.validate()
-        val main = store.projectRoot.resolve("src/main/scala/blockbox/Main.scala")
-        val included = BundledGame.read(store.projectRoot)
+        val bundled = BundledGame.read(store.projectRoot)
+        // The installed snapshot stays when there is no newer checkout. A sibling ../blockbox
+        // checkout is fast-forwarded and launched when it is ahead of that snapshot.
+        val checkout = if (bundled != null) newerSourceCheckout(store.launcherRoot, bundled, log, cancelled, inheritedEnv) else null
+        val gameRoot = checkout ?: store.projectRoot
+        val included = if (checkout == null) bundled else null
+        val main = gameRoot.resolve("src/main/scala/blockbox/Main.scala")
         require(included != null || main.isRegularFile()) { "Blockbox was not found. Reinstall the full application, or choose a game checkout under Launcher → Game location." }
         if (included != null) require(included.platform == platform && included.arch == cpuArchitecture(arch)) { "This game download is for ${included.platform}/${included.arch}. Download the build for $platform/${cpuArchitecture(arch)}." }
-        // A source checkout follows its own remote. Packaged games are already built and are not pulled.
-        if (included == null && main.isRegularFile()) updateGameCheckout(store.projectRoot, log, cancelled, inheritedEnv)
+        if (checkout == null && included == null && main.isRegularFile()) updateGameCheckout(gameRoot, log, cancelled, inheritedEnv)
         val env = inheritedEnv.toMutableMap()
         // Preserve PATH and its platform separator. Add common GUI-session omissions.
         val pathKey = env.keys.firstOrNull { it.equals("PATH", platform == HostPlatform.WINDOWS) } ?: "PATH"
@@ -45,7 +49,7 @@ class LaunchPlanner @JvmOverloads constructor(
         env["JAVA_HOME"] = javaHome.toString()
         val effectivePathKey = env.keys.firstOrNull { it.equals("PATH", platform == HostPlatform.WINDOWS) } ?: "PATH"
         env[effectivePathKey] = javaHome.resolve("bin").toString() + platform.pathSeparator + env[effectivePathKey].orEmpty()
-        val runtimeRoot = included?.prepareRuntime(store, config, log, cancelled) ?: store.projectRoot
+        val runtimeRoot = included?.prepareRuntime(store, config, log, cancelled) ?: gameRoot
         env["BLOCKBOX_PROJECT_ROOT"] = runtimeRoot.toString()
         env["BLOCKBOX_INSTANCE"] = config.name
 
@@ -53,7 +57,7 @@ class LaunchPlanner @JvmOverloads constructor(
         if (customNatives != null) require(Path.of(customNatives).isDirectory()) { "BLOCKBOX_LWJGL_NATIVE_DIR must point to a folder of native LWJGL libraries." }
         val buildCache = GameBuildCache(store.launcherRoot.resolve("cache"))
         val gameJar = included?.jar ?: resolveGameJar?.invoke(javaHome, env)
-            ?: buildCache.gameJar(store.projectRoot, javaHome, platform, arch, env, log, cancelled, onProcess, resolveNative)
+            ?: buildCache.gameJar(gameRoot, javaHome, platform, arch, env, log, cancelled, onProcess, resolveNative)
         if (included != null) log("Using included Blockbox ${included.revision} (no build tools needed).")
         val command = mutableListOf(javaHome.resolve("bin/" + if (platform == HostPlatform.WINDOWS) "java.exe" else "java").toString())
         val jvmArgs = listOf("-Xms${config.minMemoryMb}M", "-Xmx${config.maxMemoryMb}M", "--enable-native-access=ALL-UNNAMED") + splitCommandLine(config.jvmArgs)

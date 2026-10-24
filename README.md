@@ -65,6 +65,8 @@ The first source-game launch builds a runnable jar in `cache/game/`. Instances s
 
 Launch checks the checkout's git remote first. If that remote has new commits and the checkout is clean, it fast-forwards. If you are already up to date, offline, ahead, or have local changes, it leaves the checkout alone and starts the game you have.
 
+An installed app includes a snapshot of the game. Launch also looks for a checkout at `../blockbox` next to the launcher data folder. When that checkout is ahead of the snapshot, it is fast-forwarded the same way and then built and started. When it already matches the snapshot, the included game starts and nothing is downloaded or compiled.
+
 `scripts/install-linux.sh` and `scripts/install-windows.ps1` build/copy a full app into your user folder. Linux supports `--prefix DIRECTORY`; Windows supports `-InstallDir DIRECTORY`. Add `--rebuild` / `-Rebuild` for a fresh build. BSD uses `scripts/install-bsd.sh` with its own JDK and compatible native libraries.
 
 On macOS, use `./scripts/install-macos.sh --from-source` to build/copy a local app, or `--rebuild` to force a fresh build; without either flag it downloads a release. Building needs JDK 21, Scala CLI, and the game checkout described above. The macOS Java executable at `/usr/bin/java` is only a system stub when no JDK is installed.

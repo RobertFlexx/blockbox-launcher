@@ -8,6 +8,59 @@ import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 import kotlin.io.path.exists
 import kotlin.io.path.isDirectory
+import kotlin.io.path.isRegularFile
+
+/**
+ * A source checkout next to the launcher data (`../blockbox`) when it should run
+ * in place of an included snapshot. The remote is consulted by [updateGameCheckout]
+ * before this comparison; this function itself only reads the local checkout.
+ */
+internal fun classifySiblingCheckout(launcherRoot: Path, bundledRevision: String, env: Map<String, String> = System.getenv(), cancelled: () -> Boolean = { false }): Pair<Path, CheckoutUse>? {
+    val checkout = discoverSiblingCheckout(launcherRoot) ?: return null
+    return checkout to classifyCheckout(checkout, bundledRevision, env, cancelled)
+}
+
+/** Fast-forward that sibling checkout, then use it when it is ahead of the included snapshot. */
+internal fun newerSourceCheckout(launcherRoot: Path, bundled: BundledGame, log: (String) -> Unit, cancelled: () -> Boolean, env: Map<String, String> = System.getenv()): Path? {
+    val checkout = discoverSiblingCheckout(launcherRoot) ?: return null
+    if (checkout == bundled.root.toAbsolutePath().normalize()) return null
+    updateGameCheckout(checkout, log, cancelled, env)
+    val choice = classifyCheckout(checkout, bundled.revision, env, cancelled)
+    val message = when (choice) {
+        CheckoutUse.Snapshot -> return null
+        CheckoutUse.Ahead -> "Using Blockbox checkout $checkout (${revision(checkout, env, cancelled).take(12)}); it is ahead of the included game (${bundled.revision.take(12)})."
+        CheckoutUse.LocalChanges -> "Launching $checkout because that checkout has local changes."
+        CheckoutUse.DifferentHistory -> "Launching $checkout; its history differs from the included game (${bundled.revision.take(12)})."
+    }
+    log(message)
+    return checkout
+}
+
+internal enum class CheckoutUse { Snapshot, Ahead, LocalChanges, DifferentHistory }
+
+internal fun discoverSiblingCheckout(launcherRoot: Path): Path? {
+    val candidate = launcherRoot.toAbsolutePath().normalize().parent?.resolve("blockbox")?.normalize() ?: return null
+    if (!candidate.resolve(".git").exists() || !candidate.resolve("src/main/scala/blockbox/Main.scala").isRegularFile()) return null
+    return candidate
+}
+
+private fun classifyCheckout(root: Path, bundledRevision: String, env: Map<String, String>, cancelled: () -> Boolean): CheckoutUse {
+    val git = findExecutable("git", env) ?: return CheckoutUse.Snapshot
+    val head = revision(root, env, cancelled)
+    if (head.isEmpty()) return CheckoutUse.Snapshot
+    val dirty = trackedChanges(git, root, env, cancelled)
+    if (head == bundledRevision) return if (dirty) CheckoutUse.LocalChanges else CheckoutUse.Snapshot
+    val bundledIsAncestor = git(git, root, listOf("merge-base", "--is-ancestor", bundledRevision, head), env, 15, cancelled).code == 0
+    if (bundledIsAncestor) return CheckoutUse.Ahead
+    val headIsAncestor = git(git, root, listOf("merge-base", "--is-ancestor", head, bundledRevision), env, 15, cancelled).code == 0
+    if (headIsAncestor) return if (dirty) CheckoutUse.LocalChanges else CheckoutUse.Snapshot
+    return CheckoutUse.DifferentHistory
+}
+
+private fun revision(root: Path, env: Map<String, String>, cancelled: () -> Boolean): String {
+    val git = findExecutable("git", env) ?: return ""
+    return git(git, root, listOf("rev-parse", "HEAD"), env, 15, cancelled).takeIf { it.code == 0 }?.output.orEmpty()
+}
 
 /** Bring a source checkout up to its remote when that remote has moved, and otherwise leave it alone. */
 internal fun updateGameCheckout(root: Path, log: (String) -> Unit, cancelled: () -> Boolean, env: Map<String, String> = System.getenv()) {

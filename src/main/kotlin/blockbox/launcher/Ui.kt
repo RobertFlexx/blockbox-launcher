@@ -339,12 +339,24 @@ class LauncherWindow(private val store: LauncherStore = LauncherStore(), private
                 appendLine("Native     ${nativeClassifier(HostPlatform.detect(), System.getProperty("os.arch")) ?: "requires local LWJGL libraries"}")
                 appendLine("\nGame folder\n${store.projectRoot}")
                 val bundled = runCatching { BundledGame.read(store.projectRoot) }.getOrNull()
-                appendLine(if (bundled != null) "Included game ready (${bundled.revision})." else if (store.projectRoot.resolve("src/main/scala/blockbox/Main.scala").isRegularFile()) "Source found." else "Game missing. Reinstall the full app or choose Game location above.")
-                appendLine("\nLauncher data\n${store.launcherRoot}")
                 val env = System.getenv()
-                if (bundled == null) appendLine("\nScala CLI  ${findExecutable(env["BLOCKBOX_SCALA_CLI"] ?: "scala-cli") ?: "Not found on PATH; needed only to build source checkouts."}")
+                val sibling = bundled?.let { classifySiblingCheckout(store.launcherRoot, it.revision, env) }
+                val buildsCheckout = bundled == null || (sibling != null && sibling.second != CheckoutUse.Snapshot)
+                val checkout = sibling?.takeIf { it.second != CheckoutUse.Snapshot }
+                appendLine(if (checkout == null) when {
+                    bundled != null -> "Included game ready (${bundled.revision})."
+                    store.projectRoot.resolve("src/main/scala/blockbox/Main.scala").isRegularFile() -> "Source found."
+                    else -> "Game missing. Reinstall the full app or choose Game location above."
+                } else when (checkout.second) {
+                    CheckoutUse.Ahead -> "Launch uses checkout ${checkout.first}; it is ahead of the included game (${bundled?.revision?.take(12)})."
+                    CheckoutUse.LocalChanges -> "Launch uses checkout ${checkout.first} because that checkout has local changes."
+                    CheckoutUse.DifferentHistory -> "Launch uses checkout ${checkout.first}; its history differs from the included game (${bundled?.revision?.take(12)})."
+                    CheckoutUse.Snapshot -> "Included game ready (${bundled?.revision})."
+                })
+                appendLine("\nLauncher data\n${store.launcherRoot}")
+                if (buildsCheckout) appendLine("\nScala CLI  ${findExecutable(env["BLOCKBOX_SCALA_CLI"] ?: "scala-cli") ?: "Not found on PATH; needed only to build source checkouts."}")
                 config?.let {
-                    appendLine("Game Java  ${runCatching { gameJavaHome(it, env, HostPlatform.detect(), requireCompiler = bundled == null) }.getOrNull() ?: "Not found; select Java in Settings."}")
+                    appendLine("Game Java  ${runCatching { gameJavaHome(it, env, HostPlatform.detect(), requireCompiler = buildsCheckout) }.getOrNull() ?: "Not found; select Java in Settings."}")
                     appendLine("\nInstance\n${store.instanceDir(it)}")
                     appendLine("Graphics   ${it.displayBackend}")
                 }
