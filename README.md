@@ -19,6 +19,37 @@ Open Blockbox Launcher and press **Launch game**. The game is already compiled. 
 
 Installers are currently unsigned, so Windows/macOS may ask for approval. If Linux cannot mount an AppImage, start it with `--appimage-extract-and-run` to run without FUSE.
 
+### macOS terminal install
+
+Run this in Terminal to install the latest release into `~/Applications`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RobertFlexx/blockbox-launcher/main/scripts/install-macos.sh | sh
+```
+
+The [installer script](scripts/install-macos.sh) selects Apple Silicon or Intel, downloads the DMG, verifies its published SHA-256 checksum, installs under the project's [MIT license](LICENSE), and removes `com.apple.quarantine` from the DMG and app (including bundled Java). No Java installation, Scala CLI, source checkout, or `sudo` is required. Use this command only if you trust this project's unsigned releases. It removes quarantine for these files only.
+
+From a launcher checkout, `./scripts/install-macos.sh` does the same thing. Set `BLOCKBOX_APPLICATIONS_DIR` to an absolute path to choose another destination:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/RobertFlexx/blockbox-launcher/main/scripts/install-macos.sh | BLOCKBOX_APPLICATIONS_DIR="$HOME/Games" sh
+```
+
+If you already downloaded a DMG in your browser, clear its quarantine before opening it (use `x64` in the filename for an Intel Mac):
+
+```sh
+xattr -dr com.apple.quarantine "$HOME/Downloads/blockbox-macos-arm64.dmg"
+open "$HOME/Downloads/blockbox-macos-arm64.dmg"
+```
+
+Drag **Blockbox Launcher.app** to Applications. If macOS still blocks the copied app, clear quarantine on that copy, including its bundled Java:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Blockbox Launcher.app"
+```
+
+Use `"$HOME/Applications/Blockbox Launcher.app"` instead if you copied it to your user Applications folder. Apple's other option is **System Settings → Privacy & Security → Open Anyway** after the first blocked launch; see [Apple's instructions](https://support.apple.com/102445).
+
 ## From source
 
 Building requires **JDK 21** and **Scala CLI**. Keep a game checkout at `../blockbox`, or choose **Launcher → Game location…**. `BLOCKBOX_GAME_ROOT` overrides the game location; `BLOCKBOX_JAVA_HOME` / `BLOCKBOX_SCALA_CLI` select game build tools. On Windows, use the native `scala-cli.exe`.
@@ -34,7 +65,11 @@ The first source-game launch builds a runnable jar in `cache/game/`. Instances s
 
 Launch checks the checkout's git remote first. If that remote has new commits and the checkout is clean, it fast-forwards. If you are already up to date, offline, ahead, or have local changes, it leaves the checkout alone and starts the game you have.
 
-`scripts/install-linux.sh`, `scripts/install-macos.sh`, and `scripts/install-windows.ps1` build/copy a full app into your user folder. Linux supports `--prefix DIRECTORY`; Windows supports `-InstallDir DIRECTORY`. Add `--rebuild` / `-Rebuild` for a fresh build. BSD uses `scripts/install-bsd.sh` with its own JDK and compatible native libraries. Don't delete an old checkout while your instances still live in it; worlds aren't moved automatically.
+`scripts/install-linux.sh` and `scripts/install-windows.ps1` build/copy a full app into your user folder. Linux supports `--prefix DIRECTORY`; Windows supports `-InstallDir DIRECTORY`. Add `--rebuild` / `-Rebuild` for a fresh build. BSD uses `scripts/install-bsd.sh` with its own JDK and compatible native libraries.
+
+On macOS, use `./scripts/install-macos.sh --from-source` to build/copy a local app, or `--rebuild` to force a fresh build; without either flag it downloads a release. Building needs JDK 21, Scala CLI, and the game checkout described above. The macOS Java executable at `/usr/bin/java` is only a system stub when no JDK is installed.
+
+Don't delete an old checkout while your instances still live in it; worlds aren't moved automatically.
 
 ## Shortcuts
 
